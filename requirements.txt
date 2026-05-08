@@ -1,0 +1,7 @@
+python-dotenv>=1.0.1
+requests>=2.32.0
+urllib3>=2.2.0
+pandas>=2.2.0
+yfinance>=0.2.40
+akshare>=1.13.0
+pytest>=8.2.0

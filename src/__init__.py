@@ -1,0 +1,1 @@
+"""Quant AI briefing package."""
