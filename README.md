@@ -1,5 +1,7 @@
 # Quant AI Briefing
 
+[中文说明](README.zh-CN.md) | English
+
 Quant AI Briefing is a small Python service for personal investment shadow accounting and daily AI briefings. It stores investment rules and shadow trades in SQLite, fetches public market quotes, calculates position cost and floating PnL, asks an OpenAI-compatible chat completion API to write a Markdown report, and can push the report through a WeCom self-built app.
 
 This project does not connect to brokerage trading APIs and does not place real orders. It is intended for personal review, record keeping, and portfolio monitoring.
