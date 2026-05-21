@@ -1,4 +1,6 @@
-from src.ai_reporter import AIReporter
+import pytest
+
+from src.ai_reporter import AIReportError, AIReporter
 from src.config import Settings
 
 
@@ -25,7 +27,11 @@ class FailingSession:
 
 
 def test_ai_reporter_falls_back_when_unconfigured():
-    reporter = AIReporter(settings=Settings(), session=FailingSession())
+    reporter = AIReporter(
+        settings=Settings(),
+        session=FailingSession(),
+        fallback_on_failure=True,
+    )
 
     report = reporter.generate_report({"run_date": "2026-05-07", "totals_by_currency": {}})
 
@@ -34,7 +40,11 @@ def test_ai_reporter_falls_back_when_unconfigured():
 
 
 def test_ai_reporter_fallback_includes_position_detail_table():
-    reporter = AIReporter(settings=Settings(), session=FailingSession())
+    reporter = AIReporter(
+        settings=Settings(),
+        session=FailingSession(),
+        fallback_on_failure=True,
+    )
 
     report = reporter.generate_report(
         {
@@ -64,13 +74,36 @@ def test_ai_reporter_fallback_includes_position_detail_table():
     assert "+10.00%" in report
 
 
-def test_ai_reporter_falls_back_when_api_fails():
+def test_ai_reporter_raises_when_api_fails_without_fallback():
     settings = Settings(
         xiaomi_ai_api_key="key",
         xiaomi_ai_url="https://example.invalid/chat",
         xiaomi_ai_model="model",
     )
     reporter = AIReporter(settings=settings, session=FailingSession())
+
+    with pytest.raises(AIReportError):
+        reporter.generate_report(
+            {
+                "run_date": "2026-05-07",
+                "totals_by_currency": {
+                    "USD": {"cost": 500.0, "market_value": 525.0, "floating_pnl": 25.0}
+                },
+            }
+        )
+
+
+def test_ai_reporter_can_explicitly_fall_back_when_api_fails():
+    settings = Settings(
+        xiaomi_ai_api_key="key",
+        xiaomi_ai_url="https://example.invalid/chat",
+        xiaomi_ai_model="model",
+    )
+    reporter = AIReporter(
+        settings=settings,
+        session=FailingSession(),
+        fallback_on_failure=True,
+    )
 
     report = reporter.generate_report(
         {

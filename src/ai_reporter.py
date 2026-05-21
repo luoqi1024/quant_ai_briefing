@@ -31,8 +31,12 @@ SYSTEM_PROMPT = (
 )
 
 
+class AIReportError(RuntimeError):
+    """Raised when the AI report cannot be generated in strict mode."""
+
+
 class AIReporter:
-    """Generate Markdown briefings with a local fallback."""
+    """Generate Markdown briefings with an optional local fallback."""
 
     def __init__(
         self,
@@ -40,17 +44,18 @@ class AIReporter:
         timeout: float = 30.0,
         retries: int = 2,
         session: requests.Session | None = None,
+        fallback_on_failure: bool = False,
     ) -> None:
         self.settings = settings or load_settings()
         self.timeout = timeout
         self.session = session or _build_retry_session(retries)
+        self.fallback_on_failure = fallback_on_failure
 
     def generate_report(self, snapshot: dict[str, Any]) -> str:
-        """Generate a report. External API failure returns local Markdown."""
+        """Generate a report, optionally falling back to local Markdown."""
 
         if not self._configured():
-            logger.warning("AI settings are incomplete; using fallback report")
-            return self._fallback_report(snapshot)
+            return self._handle_failure("AI settings are incomplete", snapshot)
 
         payload = {
             "model": self.settings.xiaomi_ai_model,
@@ -75,10 +80,12 @@ class AIReporter:
             )
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
-            return str(content).strip() or self._fallback_report(snapshot)
+            report = str(content).strip()
+            if not report:
+                return self._handle_failure("AI report API returned empty content", snapshot)
+            return report
         except Exception as exc:  # noqa: BLE001 - remote APIs can fail many ways.
-            logger.warning("AI report API failed, using fallback: %s", exc)
-            return self._fallback_report(snapshot)
+            return self._handle_failure(f"AI report API failed: {exc}", snapshot)
 
     def _configured(self) -> bool:
         return all(
@@ -88,6 +95,12 @@ class AIReporter:
                 self.settings.xiaomi_ai_model,
             ]
         )
+
+    def _handle_failure(self, message: str, snapshot: dict[str, Any]) -> str:
+        if self.fallback_on_failure:
+            logger.warning("%s; using fallback report", message)
+            return self._fallback_report(snapshot)
+        raise AIReportError(message)
 
     def _fallback_report(self, snapshot: dict[str, Any]) -> str:
         totals = snapshot.get("totals_by_currency", {})

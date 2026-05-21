@@ -9,7 +9,7 @@ from datetime import date, datetime
 from typing import Any
 
 from src import calculator, db_manager
-from src.ai_reporter import AIReporter
+from src.ai_reporter import AIReportError, AIReporter
 from src.config import ConfigError, Settings, load_settings, validate_settings
 from src.data_fetcher import MarketDataFetcher
 from src.market_context import build_market_context
@@ -88,7 +88,14 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Portfolio snapshot totals: %s", snapshot["totals_by_currency"])
 
     reporter_settings = Settings() if args.dry_run else settings
-    report = AIReporter(settings=reporter_settings).generate_report(snapshot)
+    try:
+        report = AIReporter(
+            settings=reporter_settings,
+            fallback_on_failure=args.dry_run,
+        ).generate_report(snapshot)
+    except AIReportError as exc:
+        logger.error("AI report generation failed: %s", exc)
+        return 2
 
     print(report)
 
