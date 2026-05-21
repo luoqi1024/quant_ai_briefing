@@ -17,6 +17,7 @@ from src.notifier import WeComNotifier
 
 
 logger = logging.getLogger(__name__)
+AI_REPORT_TIMEOUT_SECONDS = 90.0
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -91,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         report = AIReporter(
             settings=reporter_settings,
+            timeout=AI_REPORT_TIMEOUT_SECONDS,
             fallback_on_failure=args.dry_run,
         ).generate_report(snapshot)
     except AIReportError as exc:
