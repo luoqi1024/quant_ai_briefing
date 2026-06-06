@@ -35,6 +35,8 @@ def test_should_trigger_rule_weekly_and_monthly():
     assert calculator.should_trigger_rule(monthly_rule, "2026-05-08") is False
     assert calculator.should_trigger_rule(daily_rule, "2026-05-07") is True
     assert calculator.should_trigger_rule(daily_rule, "2026-05-08") is True
+    assert calculator.should_trigger_rule(daily_rule, "2026-05-09") is False
+    assert calculator.should_trigger_rule(daily_rule, "2026-05-10") is False
 
 
 def test_run_shadow_accounting_inserts_triggered_trades_once(tmp_path):

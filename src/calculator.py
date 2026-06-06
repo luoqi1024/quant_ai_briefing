@@ -45,7 +45,7 @@ def should_trigger_rule(rule: dict[str, Any], run_date: str | date) -> bool:
     if freq_type == "monthly":
         return target_date.day == freq_value
     if freq_type == "daily":
-        return True
+        return target_date.isoweekday() <= 5
     return False
 
 
