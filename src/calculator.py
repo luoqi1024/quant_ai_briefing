@@ -75,6 +75,15 @@ def _get_quote_for_snapshot(
     quote_provider: QuoteProvider | None,
     db_path: str | Path | None,
 ) -> Any:
+    cached_quote = db_manager.get_market_snapshot(
+        asset_code=asset_code,
+        market_type=market_type,
+        date=run_date,
+        db_path=db_path,
+    )
+    if _quote_value(cached_quote, "source") == "manual-reconcile-screenshot":
+        return cached_quote
+
     quote = _get_quote(
         asset_code=asset_code,
         market_type=market_type,

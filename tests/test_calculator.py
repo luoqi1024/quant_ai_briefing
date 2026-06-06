@@ -141,6 +141,42 @@ def test_build_portfolio_snapshot_falls_back_to_latest_cached_quote(tmp_path):
     assert cn["market_value"] == 1000.0
 
 
+def test_build_portfolio_snapshot_prefers_manual_reconcile_quote(tmp_path):
+    db_path = _setup_db(tmp_path)
+    calculator.run_shadow_accounting(
+        "2026-05-07", db_path=db_path, quote_provider=_mock_quote
+    )
+    db_manager.upsert_market_snapshot(
+        asset_code="QQQ",
+        market_type="US",
+        date="2026-05-07",
+        price=410.0,
+        change_pct=-0.5,
+        source="manual-reconcile-screenshot",
+        db_path=db_path,
+    )
+
+    snapshot = calculator.build_portfolio_snapshot(
+        "2026-05-07",
+        db_path=db_path,
+        quote_provider=lambda asset_code, market_type, run_date: {
+            "asset_code": asset_code,
+            "market_type": market_type,
+            "price": 999.0,
+            "change_pct": 9.0,
+            "quote_date": run_date,
+            "source": "live",
+        },
+    )
+
+    qqq = next(item for item in snapshot["positions"] if item["asset_code"] == "QQQ")
+
+    assert qqq["price"] == 410.0
+    assert qqq["market_value"] == 512.5
+    assert qqq["change_pct"] == -0.5
+    assert qqq["quote_source"] == "manual-reconcile-screenshot"
+
+
 def test_build_portfolio_snapshot_falls_back_to_average_cost_without_quote(tmp_path):
     db_path = _setup_db(tmp_path)
     rule = db_manager.get_all_rules(db_path=db_path)[0]
