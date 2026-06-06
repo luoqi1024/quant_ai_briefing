@@ -39,12 +39,14 @@ cp .env.example .env
 | --- | --- |
 | `DATABASE_PATH` | SQLite 数据库路径，默认 `quant_data.db`。 |
 | `LOG_LEVEL` | Python 日志等级，默认 `INFO`。 |
-| `XIAOMI_AI_API_KEY` | 兼容 OpenAI Chat Completions 接口的 API Key。 |
-| `XIAOMI_AI_URL` | Chat Completions 请求地址。 |
-| `XIAOMI_AI_MODEL` | 模型名称。 |
+| `AI_API_KEY` | 兼容 OpenAI Chat Completions 接口的 API Key。 |
+| `AI_URL` | Chat Completions 请求地址，例如 `https://api.deepseek.com/chat/completions`。 |
+| `AI_MODEL` | 模型名称，例如 `deepseek-v4-flash`。 |
 | `WECOM_CORPID` | 企业微信企业 ID。 |
 | `WECOM_AGENTID` | 企业微信自建应用 Agent ID。 |
 | `WECOM_SECRET` | 企业微信自建应用 Secret。 |
+
+旧的 `XIAOMI_AI_API_KEY`、`XIAOMI_AI_URL`、`XIAOMI_AI_MODEL` 仍然兼容，但新部署建议使用通用的 `AI_*` 变量名。
 
 不要提交 `.env`、SQLite 数据库、日志文件或个人持仓数据。仓库默认已经通过 `.gitignore` 忽略这些文件。
 

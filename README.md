@@ -39,12 +39,14 @@ Environment variables:
 | --- | --- |
 | `DATABASE_PATH` | SQLite database path. Defaults to `quant_data.db`. |
 | `LOG_LEVEL` | Python log level. Defaults to `INFO`. |
-| `XIAOMI_AI_API_KEY` | API key for an OpenAI-compatible chat completion endpoint. |
-| `XIAOMI_AI_URL` | Chat completion URL. |
-| `XIAOMI_AI_MODEL` | Model name. |
+| `AI_API_KEY` | API key for an OpenAI-compatible chat completion endpoint. |
+| `AI_URL` | Chat completion URL, for example `https://api.deepseek.com/chat/completions`. |
+| `AI_MODEL` | Model name, for example `deepseek-v4-flash`. |
 | `WECOM_CORPID` | WeCom corporation ID. |
 | `WECOM_AGENTID` | WeCom self-built app agent ID. |
 | `WECOM_SECRET` | WeCom self-built app secret. |
+
+Legacy `XIAOMI_AI_API_KEY`, `XIAOMI_AI_URL`, and `XIAOMI_AI_MODEL` variables are still accepted for backward compatibility, but new deployments should use the generic `AI_*` names.
 
 Do not commit `.env`, SQLite databases, logs, or personal portfolio data. They are ignored by default.
 

@@ -76,9 +76,9 @@ def test_ai_reporter_fallback_includes_position_detail_table():
 
 def test_ai_reporter_raises_when_api_fails_without_fallback():
     settings = Settings(
-        xiaomi_ai_api_key="key",
-        xiaomi_ai_url="https://example.invalid/chat",
-        xiaomi_ai_model="model",
+        ai_api_key="key",
+        ai_url="https://example.invalid/chat",
+        ai_model="model",
     )
     reporter = AIReporter(settings=settings, session=FailingSession())
 
@@ -95,9 +95,9 @@ def test_ai_reporter_raises_when_api_fails_without_fallback():
 
 def test_ai_reporter_can_explicitly_fall_back_when_api_fails():
     settings = Settings(
-        xiaomi_ai_api_key="key",
-        xiaomi_ai_url="https://example.invalid/chat",
-        xiaomi_ai_model="model",
+        ai_api_key="key",
+        ai_url="https://example.invalid/chat",
+        ai_model="model",
     )
     reporter = AIReporter(
         settings=settings,
@@ -120,9 +120,9 @@ def test_ai_reporter_can_explicitly_fall_back_when_api_fails():
 
 def test_ai_reporter_sends_richer_prompt_and_market_context():
     settings = Settings(
-        xiaomi_ai_api_key="key",
-        xiaomi_ai_url="https://example.invalid/chat",
-        xiaomi_ai_model="model",
+        ai_api_key="key",
+        ai_url="https://example.invalid/chat",
+        ai_model="model",
     )
     session = SuccessfulSession()
     reporter = AIReporter(settings=settings, session=session)
@@ -167,3 +167,25 @@ def test_ai_reporter_sends_richer_prompt_and_market_context():
     assert "累计盈利/亏损 floating_pnl" in system_prompt
     assert "纳指科技" in user_payload
     assert "daily_pnl" in user_payload
+
+
+def test_ai_reporter_accepts_legacy_xiaomi_settings():
+    settings = Settings(
+        xiaomi_ai_api_key="legacy-key",
+        xiaomi_ai_url="https://example.invalid/chat",
+        xiaomi_ai_model="legacy-model",
+    )
+    session = SuccessfulSession()
+    reporter = AIReporter(settings=settings, session=session)
+
+    report = reporter.generate_report(
+        {
+            "run_date": "2026-05-07",
+            "totals_by_currency": {
+                "CNY": {"cost": 100.0, "market_value": 101.0, "floating_pnl": 1.0}
+            },
+        }
+    )
+
+    assert report
+    assert session.last_payload["model"] == "legacy-model"

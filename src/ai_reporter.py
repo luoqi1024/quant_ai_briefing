@@ -58,7 +58,7 @@ class AIReporter:
             return self._handle_failure("AI settings are incomplete", snapshot)
 
         payload = {
-            "model": self.settings.xiaomi_ai_model,
+            "model": self.settings.resolved_ai_model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
@@ -70,9 +70,9 @@ class AIReporter:
         }
         try:
             response = self.session.post(
-                self.settings.xiaomi_ai_url,
+                self.settings.resolved_ai_url,
                 headers={
-                    "Authorization": f"Bearer {self.settings.xiaomi_ai_api_key}",
+                    "Authorization": f"Bearer {self.settings.resolved_ai_api_key}",
                     "Content-Type": "application/json",
                 },
                 json=payload,
@@ -90,9 +90,9 @@ class AIReporter:
     def _configured(self) -> bool:
         return all(
             [
-                self.settings.xiaomi_ai_api_key,
-                self.settings.xiaomi_ai_url,
-                self.settings.xiaomi_ai_model,
+                self.settings.resolved_ai_api_key,
+                self.settings.resolved_ai_url,
+                self.settings.resolved_ai_model,
             ]
         )
 

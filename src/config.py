@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 try:
-    from dotenv import load_dotenv
+    from dotenv import dotenv_values, load_dotenv
 except ImportError:  # pragma: no cover - dependency is declared for runtime.
+    dotenv_values = None
     load_dotenv = None
 
 
@@ -18,12 +19,33 @@ class Settings:
 
     database_path: str = "quant_data.db"
     log_level: str = "INFO"
+    ai_api_key: str | None = None
+    ai_url: str | None = None
+    ai_model: str | None = None
     xiaomi_ai_api_key: str | None = None
     xiaomi_ai_url: str | None = None
     xiaomi_ai_model: str | None = None
     wecom_corpid: str | None = None
     wecom_agentid: str | None = None
     wecom_secret: str | None = None
+
+    @property
+    def resolved_ai_api_key(self) -> str | None:
+        """Return the generic AI key, falling back to legacy Xiaomi config."""
+
+        return self.ai_api_key or self.xiaomi_ai_api_key
+
+    @property
+    def resolved_ai_url(self) -> str | None:
+        """Return the generic AI URL, falling back to legacy Xiaomi config."""
+
+        return self.ai_url or self.xiaomi_ai_url
+
+    @property
+    def resolved_ai_model(self) -> str | None:
+        """Return the generic AI model, falling back to legacy Xiaomi config."""
+
+        return self.ai_model or self.xiaomi_ai_model
 
 
 class ConfigError(ValueError):
@@ -36,12 +58,20 @@ def load_settings() -> Settings:
     Full validation is added with the modules that need each external service.
     """
 
+    env_path = _project_env_path()
     if load_dotenv is not None:
-        load_dotenv(dotenv_path=_project_env_path())
+        load_dotenv(dotenv_path=env_path)
+    file_settings = dotenv_values(env_path) if dotenv_values is not None else {}
 
     return Settings(
         database_path=os.getenv("DATABASE_PATH", "quant_data.db"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
+        ai_api_key=_config_value(file_settings, "AI_API_KEY")
+        or _config_value(file_settings, "XIAOMI_AI_API_KEY"),
+        ai_url=_config_value(file_settings, "AI_URL")
+        or _config_value(file_settings, "XIAOMI_AI_URL"),
+        ai_model=_config_value(file_settings, "AI_MODEL")
+        or _config_value(file_settings, "XIAOMI_AI_MODEL"),
         xiaomi_ai_api_key=os.getenv("XIAOMI_AI_API_KEY"),
         xiaomi_ai_url=os.getenv("XIAOMI_AI_URL"),
         xiaomi_ai_model=os.getenv("XIAOMI_AI_MODEL"),
@@ -64,12 +94,12 @@ def validate_settings(
         missing.append("DATABASE_PATH")
 
     if not dry_run:
-        if not settings.xiaomi_ai_api_key:
-            missing.append("XIAOMI_AI_API_KEY")
-        if not settings.xiaomi_ai_url:
-            missing.append("XIAOMI_AI_URL")
-        if not settings.xiaomi_ai_model:
-            missing.append("XIAOMI_AI_MODEL")
+        if not settings.resolved_ai_api_key:
+            missing.append("AI_API_KEY")
+        if not settings.resolved_ai_url:
+            missing.append("AI_URL")
+        if not settings.resolved_ai_model:
+            missing.append("AI_MODEL")
 
     if send and not dry_run:
         if not settings.wecom_corpid:
@@ -89,3 +119,8 @@ def validate_settings(
 
 def _project_env_path() -> Path:
     return Path(__file__).resolve().parents[1] / ".env"
+
+
+def _config_value(file_settings: dict[str, str | None], name: str) -> str | None:
+    file_value = file_settings.get(name)
+    return file_value or os.getenv(name)
