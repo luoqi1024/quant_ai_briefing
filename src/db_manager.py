@@ -101,6 +101,37 @@ def init_db(db_path: str | Path | None = None) -> None:
                 fetched_at TEXT NOT NULL,
                 UNIQUE(asset_code, market_type, date)
             );
+
+            CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_date TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                cost REAL NOT NULL,
+                market_value REAL NOT NULL,
+                floating_pnl REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(run_date, currency)
+            );
+
+            CREATE TABLE IF NOT EXISTS position_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_date TEXT NOT NULL,
+                asset_code TEXT NOT NULL,
+                asset_name TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                shares REAL NOT NULL,
+                cost REAL NOT NULL,
+                price REAL NOT NULL,
+                market_value REAL NOT NULL,
+                floating_pnl REAL NOT NULL,
+                floating_pnl_pct REAL NOT NULL,
+                change_pct REAL,
+                daily_pnl REAL,
+                quote_source TEXT NOT NULL,
+                quote_date TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(run_date, asset_code, currency)
+            );
             """
         )
 
@@ -266,6 +297,189 @@ def upsert_market_snapshot(
             """,
             (asset_code, market_type, date, price, change_pct, source, _now()),
         )
+
+
+def upsert_portfolio_snapshot(
+    *,
+    run_date: str,
+    currency: str,
+    cost: float,
+    market_value: float,
+    floating_pnl: float,
+    db_path: str | Path | None = None,
+) -> None:
+    """Insert or update one portfolio-level snapshot row."""
+
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO portfolio_snapshots (
+                run_date, currency, cost, market_value, floating_pnl, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_date, currency)
+            DO UPDATE SET
+                cost = excluded.cost,
+                market_value = excluded.market_value,
+                floating_pnl = excluded.floating_pnl,
+                created_at = excluded.created_at
+            """,
+            (run_date, currency, cost, market_value, floating_pnl, _now()),
+        )
+
+
+def upsert_position_snapshot(
+    *,
+    run_date: str,
+    asset_code: str,
+    asset_name: str,
+    currency: str,
+    shares: float,
+    cost: float,
+    price: float,
+    market_value: float,
+    floating_pnl: float,
+    floating_pnl_pct: float,
+    change_pct: float | None,
+    daily_pnl: float | None,
+    quote_source: str,
+    quote_date: str | None,
+    db_path: str | Path | None = None,
+) -> None:
+    """Insert or update one position snapshot row."""
+
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO position_snapshots (
+                run_date, asset_code, asset_name, currency, shares, cost, price,
+                market_value, floating_pnl, floating_pnl_pct, change_pct, daily_pnl,
+                quote_source, quote_date, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_date, asset_code, currency)
+            DO UPDATE SET
+                asset_name = excluded.asset_name,
+                shares = excluded.shares,
+                cost = excluded.cost,
+                price = excluded.price,
+                market_value = excluded.market_value,
+                floating_pnl = excluded.floating_pnl,
+                floating_pnl_pct = excluded.floating_pnl_pct,
+                change_pct = excluded.change_pct,
+                daily_pnl = excluded.daily_pnl,
+                quote_source = excluded.quote_source,
+                quote_date = excluded.quote_date,
+                created_at = excluded.created_at
+            """,
+            (
+                run_date,
+                asset_code,
+                asset_name,
+                currency,
+                shares,
+                cost,
+                price,
+                market_value,
+                floating_pnl,
+                floating_pnl_pct,
+                change_pct,
+                daily_pnl,
+                quote_source,
+                quote_date,
+                _now(),
+            ),
+        )
+
+
+def get_portfolio_snapshots(run_date: str, db_path: str | Path | None = None) -> list[dict[str, Any]]:
+    """Return saved portfolio totals for one run date."""
+
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT run_date, currency, cost, market_value, floating_pnl, created_at
+            FROM portfolio_snapshots
+            WHERE run_date = ?
+            ORDER BY currency
+            """,
+            (run_date,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_position_snapshots(run_date: str, db_path: str | Path | None = None) -> list[dict[str, Any]]:
+    """Return saved position snapshots for one run date."""
+
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                run_date,
+                asset_code,
+                asset_name,
+                currency,
+                shares,
+                cost,
+                price,
+                market_value,
+                floating_pnl,
+                floating_pnl_pct,
+                change_pct,
+                daily_pnl,
+                quote_source,
+                quote_date,
+                created_at
+            FROM position_snapshots
+            WHERE run_date = ?
+            ORDER BY asset_code, currency
+            """,
+            (run_date,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_latest_saved_snapshot_date_in_range(
+    *,
+    start_date: str,
+    end_date: str,
+    db_path: str | Path | None = None,
+) -> str | None:
+    """Return the latest saved daily snapshot date inside the inclusive window."""
+
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT run_date
+            FROM portfolio_snapshots
+            WHERE run_date BETWEEN ? AND ?
+            ORDER BY run_date DESC
+            LIMIT 1
+            """,
+            (start_date, end_date),
+        ).fetchone()
+    return str(row["run_date"]) if row else None
+
+
+def get_latest_saved_snapshot_date_before(
+    *,
+    before_date: str,
+    db_path: str | Path | None = None,
+) -> str | None:
+    """Return the latest saved daily snapshot date strictly before before_date."""
+
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT run_date
+            FROM portfolio_snapshots
+            WHERE run_date < ?
+            ORDER BY run_date DESC
+            LIMIT 1
+            """,
+            (before_date,),
+        ).fetchone()
+    return str(row["run_date"]) if row else None
 
 
 def get_market_snapshot(

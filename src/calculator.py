@@ -8,14 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from src import db_manager
+from src.business_calendar import as_date, is_daily_push_day, weekly_summary_window
 
 QuoteProvider = Callable[[str, str, str], Any]
 
 
 def _as_date(value: str | date) -> date:
-    if isinstance(value, date):
-        return value
-    return datetime.strptime(value, "%Y-%m-%d").date()
+    return as_date(value)
 
 
 def _as_date_string(value: str | date) -> str:
@@ -45,7 +44,7 @@ def should_trigger_rule(rule: dict[str, Any], run_date: str | date) -> bool:
     if freq_type == "monthly":
         return target_date.day == freq_value
     if freq_type == "daily":
-        return target_date.isoweekday() <= 5
+        return is_daily_push_day(target_date)
     return False
 
 
@@ -258,3 +257,183 @@ def build_portfolio_snapshot(
         "positions": positions,
         "totals_by_currency": totals_by_currency,
     }
+
+
+def save_portfolio_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    db_path: str | Path | None = None,
+) -> None:
+    """Persist one daily snapshot for later weekly summaries."""
+
+    run_date = snapshot["run_date"]
+    for currency, values in snapshot.get("totals_by_currency", {}).items():
+        db_manager.upsert_portfolio_snapshot(
+            run_date=run_date,
+            currency=currency,
+            cost=float(values["cost"]),
+            market_value=float(values["market_value"]),
+            floating_pnl=float(values["floating_pnl"]),
+            db_path=db_path,
+        )
+
+    for position in snapshot.get("positions", []):
+        db_manager.upsert_position_snapshot(
+            run_date=run_date,
+            asset_code=position["asset_code"],
+            asset_name=position["asset_name"],
+            currency=position["currency"],
+            shares=float(position["shares"]),
+            cost=float(position["cost"]),
+            price=float(position["price"]),
+            market_value=float(position["market_value"]),
+            floating_pnl=float(position["floating_pnl"]),
+            floating_pnl_pct=float(position["floating_pnl_pct"]),
+            change_pct=_as_optional_float(position.get("change_pct")),
+            daily_pnl=_as_optional_float(position.get("daily_pnl")),
+            quote_source=str(position.get("quote_source") or ""),
+            quote_date=position.get("quote_date"),
+            db_path=db_path,
+        )
+
+
+def build_weekly_summary(
+    run_date: str | date,
+    *,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Build a weekly report payload from persisted daily snapshots."""
+
+    window = weekly_summary_window(run_date)
+    week_start = window.week_start.isoformat()
+    week_end = window.week_end.isoformat()
+
+    end_snapshot_date = db_manager.get_latest_saved_snapshot_date_in_range(
+        start_date=week_start,
+        end_date=week_end,
+        db_path=db_path,
+    )
+    if end_snapshot_date is None:
+        return {
+            "report_kind": "weekly",
+            "run_date": _as_date_string(run_date),
+            "week_start": week_start,
+            "week_end": week_end,
+            "has_week_data": False,
+            "positions": [],
+            "totals_by_currency": {},
+            "baseline_totals_by_currency": {},
+            "weekly_changes_by_currency": {},
+            "top_contributor": None,
+            "top_detractor": None,
+        }
+
+    baseline_date = db_manager.get_latest_saved_snapshot_date_before(
+        before_date=week_start,
+        db_path=db_path,
+    )
+    end_positions = db_manager.get_position_snapshots(end_snapshot_date, db_path=db_path)
+    end_totals_rows = db_manager.get_portfolio_snapshots(end_snapshot_date, db_path=db_path)
+    baseline_totals_rows = (
+        db_manager.get_portfolio_snapshots(baseline_date, db_path=db_path)
+        if baseline_date
+        else []
+    )
+    baseline_position_rows = (
+        db_manager.get_position_snapshots(baseline_date, db_path=db_path)
+        if baseline_date
+        else []
+    )
+
+    totals_by_currency = _totals_by_currency_from_rows(end_totals_rows)
+    baseline_totals_by_currency = _totals_by_currency_from_rows(baseline_totals_rows)
+    baseline_positions_by_key = {
+        (row["asset_code"], row["currency"]): row for row in baseline_position_rows
+    }
+    positions = []
+    for row in end_positions:
+        baseline = baseline_positions_by_key.get((row["asset_code"], row["currency"]))
+        weekly_market_value_change = float(row["market_value"]) - float(
+            baseline["market_value"]
+        ) if baseline else None
+        weekly_floating_pnl_change = float(row["floating_pnl"]) - float(
+            baseline["floating_pnl"]
+        ) if baseline else None
+        position = dict(row)
+        position["weekly_market_value_change"] = weekly_market_value_change
+        position["weekly_floating_pnl_change"] = weekly_floating_pnl_change
+        positions.append(position)
+
+    contributor_positions = [
+        item for item in positions if item.get("weekly_floating_pnl_change") is not None
+    ]
+    top_contributor = (
+        max(contributor_positions, key=lambda item: item["weekly_floating_pnl_change"])
+        if contributor_positions
+        else None
+    )
+    top_detractor = (
+        min(contributor_positions, key=lambda item: item["weekly_floating_pnl_change"])
+        if contributor_positions
+        else None
+    )
+
+    return {
+        "report_kind": "weekly",
+        "run_date": _as_date_string(run_date),
+        "week_start": week_start,
+        "week_end": week_end,
+        "has_week_data": True,
+        "snapshot_date": end_snapshot_date,
+        "baseline_date": baseline_date,
+        "positions": positions,
+        "totals_by_currency": totals_by_currency,
+        "baseline_totals_by_currency": baseline_totals_by_currency,
+        "weekly_changes_by_currency": _weekly_changes_by_currency(
+            totals_by_currency,
+            baseline_totals_by_currency,
+        ),
+        "top_contributor": top_contributor,
+        "top_detractor": top_detractor,
+    }
+
+
+def _totals_by_currency_from_rows(rows: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    return {
+        row["currency"]: {
+            "cost": float(row["cost"]),
+            "market_value": float(row["market_value"]),
+            "floating_pnl": float(row["floating_pnl"]),
+        }
+        for row in rows
+    }
+
+
+def _weekly_changes_by_currency(
+    current: dict[str, dict[str, float]],
+    baseline: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float | None]]:
+    currencies = set(current) | set(baseline)
+    changes: dict[str, dict[str, float | None]] = {}
+    for currency in currencies:
+        current_values = current.get(currency)
+        baseline_values = baseline.get(currency)
+        if current_values is None or baseline_values is None:
+            changes[currency] = {
+                "market_value_change": None,
+                "floating_pnl_change": None,
+            }
+            continue
+        changes[currency] = {
+            "market_value_change": current_values["market_value"]
+            - baseline_values["market_value"],
+            "floating_pnl_change": current_values["floating_pnl"]
+            - baseline_values["floating_pnl"],
+        }
+    return changes
+
+
+def _as_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)

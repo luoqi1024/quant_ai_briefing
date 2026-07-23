@@ -203,3 +203,68 @@ def test_build_portfolio_snapshot_falls_back_to_average_cost_without_quote(tmp_p
     assert qqq["market_value"] == 500.0
     assert qqq["floating_pnl"] == 0.0
     assert qqq["quote_source"] == "average_cost_fallback"
+
+
+def test_save_portfolio_snapshot_persists_daily_snapshot(tmp_path):
+    db_path = _setup_db(tmp_path)
+    calculator.run_shadow_accounting(
+        "2026-05-07", db_path=db_path, quote_provider=_mock_quote
+    )
+    snapshot = calculator.build_portfolio_snapshot(
+        "2026-05-07",
+        db_path=db_path,
+        quote_provider=_mock_quote,
+    )
+
+    calculator.save_portfolio_snapshot(snapshot, db_path=db_path)
+
+    portfolio_rows = db_manager.get_portfolio_snapshots("2026-05-07", db_path=db_path)
+    position_rows = db_manager.get_position_snapshots("2026-05-07", db_path=db_path)
+
+    assert len(portfolio_rows) == 2
+    assert len(position_rows) == 2
+
+
+def test_build_weekly_summary_uses_saved_snapshots(tmp_path):
+    db_path = _setup_db(tmp_path)
+    for run_date, qqq_price, cn_price in [
+        ("2026-06-11", 400.0, 2.0),
+        ("2026-06-18", 420.0, 2.1),
+        ("2026-06-19", 430.0, 2.2),
+    ]:
+        calculator.run_shadow_accounting(
+            run_date, db_path=db_path, quote_provider=_mock_quote
+        )
+        snapshot = calculator.build_portfolio_snapshot(
+            run_date,
+            db_path=db_path,
+            quote_provider=lambda asset_code, market_type, current_date, qqq_price=qqq_price, cn_price=cn_price: {
+                "asset_code": asset_code,
+                "market_type": market_type,
+                "price": qqq_price if asset_code == "QQQ" else cn_price,
+                "change_pct": 0.5 if asset_code == "QQQ" else 0.2,
+                "quote_date": current_date,
+                "source": "mock",
+            },
+        )
+        calculator.save_portfolio_snapshot(snapshot, db_path=db_path)
+
+    summary = calculator.build_weekly_summary("2026-06-21", db_path=db_path)
+
+    assert summary["has_week_data"] is True
+    assert summary["snapshot_date"] == "2026-06-19"
+    assert summary["baseline_date"] == "2026-06-11"
+    assert summary["week_start"] == "2026-06-15"
+    assert summary["week_end"] == "2026-06-19"
+    assert summary["weekly_changes_by_currency"]["USD"]["market_value_change"] is not None
+    assert summary["top_contributor"] is not None
+
+
+def test_build_weekly_summary_handles_empty_week(tmp_path):
+    db_path = _setup_db(tmp_path)
+
+    summary = calculator.build_weekly_summary("2026-06-21", db_path=db_path)
+
+    assert summary["has_week_data"] is False
+    assert summary["positions"] == []
+    assert summary["totals_by_currency"] == {}

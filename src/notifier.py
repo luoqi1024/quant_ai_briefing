@@ -116,7 +116,7 @@ def send_markdown(content: str) -> bool:
 def _format_chunk(chunk: str, *, index: int, total: int) -> str:
     if total <= 1:
         return chunk
-    return f"### 投资日报（第 {index}/{total} 部分）\n\n{chunk}"
+    return f"### 投资简报（第 {index}/{total} 部分）\n\n{chunk}"
 
 
 def _split_markdown_by_bytes(

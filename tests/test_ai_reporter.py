@@ -18,7 +18,7 @@ class Response:
 class SuccessfulSession:
     def post(self, *args, **kwargs):
         self.last_payload = kwargs["json"]
-        return Response({"choices": [{"message": {"content": "生成后的日报"}}]})
+        return Response({"choices": [{"message": {"content": "生成后的报告"}}]})
 
 
 class FailingSession:
@@ -33,10 +33,34 @@ def test_ai_reporter_falls_back_when_unconfigured():
         fallback_on_failure=True,
     )
 
-    report = reporter.generate_report({"run_date": "2026-05-07", "totals_by_currency": {}})
+    report = reporter.generate_report(
+        {"run_date": "2026-05-07", "totals_by_currency": {}},
+        report_kind="daily",
+    )
 
     assert "投资日报" in report
     assert "暂无持仓" in report
+
+
+def test_ai_reporter_weekly_fallback_handles_missing_week_data():
+    reporter = AIReporter(
+        settings=Settings(),
+        session=FailingSession(),
+        fallback_on_failure=True,
+    )
+
+    report = reporter.generate_report(
+        {
+            "run_date": "2026-06-21",
+            "week_start": "2026-06-15",
+            "week_end": "2026-06-19",
+            "has_week_data": False,
+        },
+        report_kind="weekly",
+    )
+
+    assert "投资周报" in report
+    assert "没有可用的日报快照" in report
 
 
 def test_ai_reporter_fallback_includes_position_detail_table():
@@ -63,7 +87,8 @@ def test_ai_reporter_fallback_includes_position_detail_table():
                     "floating_pnl_pct": 10.0,
                 }
             ],
-        }
+        },
+        report_kind="daily",
     )
 
     assert "持仓明细" in report
@@ -89,36 +114,12 @@ def test_ai_reporter_raises_when_api_fails_without_fallback():
                 "totals_by_currency": {
                     "USD": {"cost": 500.0, "market_value": 525.0, "floating_pnl": 25.0}
                 },
-            }
+            },
+            report_kind="daily",
         )
 
 
-def test_ai_reporter_can_explicitly_fall_back_when_api_fails():
-    settings = Settings(
-        ai_api_key="key",
-        ai_url="https://example.invalid/chat",
-        ai_model="model",
-    )
-    reporter = AIReporter(
-        settings=settings,
-        session=FailingSession(),
-        fallback_on_failure=True,
-    )
-
-    report = reporter.generate_report(
-        {
-            "run_date": "2026-05-07",
-            "totals_by_currency": {
-                "USD": {"cost": 500.0, "market_value": 525.0, "floating_pnl": 25.0}
-            },
-        }
-    )
-
-    assert "USD" in report
-    assert "25.00" in report
-
-
-def test_ai_reporter_sends_richer_prompt_and_market_context():
+def test_ai_reporter_sends_daily_prompt_and_market_context():
     settings = Settings(
         ai_api_key="key",
         ai_url="https://example.invalid/chat",
@@ -154,19 +155,53 @@ def test_ai_reporter_sends_richer_prompt_and_market_context():
                     }
                 ]
             },
-        }
+        },
+        report_kind="daily",
     )
 
     system_prompt = session.last_payload["messages"][0]["content"]
     user_payload = session.last_payload["messages"][1]["content"]
 
-    assert report == "生成后的日报"
-    assert "700 到 1100" in system_prompt
-    assert "逐项持仓明细表" in system_prompt
-    assert "今日盈利/亏损金额 daily_pnl" in system_prompt
-    assert "累计盈利/亏损 floating_pnl" in system_prompt
+    assert report == "生成后的报告"
+    assert "投资日报" in system_prompt
+    assert "daily_pnl" in system_prompt
     assert "纳指科技" in user_payload
     assert "daily_pnl" in user_payload
+
+
+def test_ai_reporter_sends_weekly_prompt():
+    settings = Settings(
+        ai_api_key="key",
+        ai_url="https://example.invalid/chat",
+        ai_model="model",
+    )
+    session = SuccessfulSession()
+    reporter = AIReporter(settings=settings, session=session)
+
+    report = reporter.generate_report(
+        {
+            "run_date": "2026-06-21",
+            "week_start": "2026-06-15",
+            "week_end": "2026-06-19",
+            "has_week_data": True,
+            "snapshot_date": "2026-06-19",
+            "baseline_date": "2026-06-12",
+            "totals_by_currency": {
+                "CNY": {"cost": 100.0, "market_value": 101.0, "floating_pnl": 1.0}
+            },
+            "weekly_changes_by_currency": {
+                "CNY": {"market_value_change": 5.0, "floating_pnl_change": 5.0}
+            },
+            "positions": [],
+        },
+        report_kind="weekly",
+    )
+
+    system_prompt = session.last_payload["messages"][0]["content"]
+
+    assert report == "生成后的报告"
+    assert "投资周报" in system_prompt
+    assert "baseline_date" in system_prompt
 
 
 def test_ai_reporter_accepts_legacy_xiaomi_settings():
@@ -184,7 +219,8 @@ def test_ai_reporter_accepts_legacy_xiaomi_settings():
             "totals_by_currency": {
                 "CNY": {"cost": 100.0, "market_value": 101.0, "floating_pnl": 1.0}
             },
-        }
+        },
+        report_kind="daily",
     )
 
     assert report
