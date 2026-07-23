@@ -1,4 +1,4 @@
-"""Broader market context for the daily briefing."""
+"""Broader market context for the briefing prompts."""
 
 from __future__ import annotations
 

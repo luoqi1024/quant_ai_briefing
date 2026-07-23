@@ -10,6 +10,7 @@ from typing import Any
 
 from src import calculator, db_manager
 from src.ai_reporter import AIReportError, AIReporter
+from src.business_calendar import is_daily_push_day
 from src.config import ConfigError, Settings, load_settings, validate_settings
 from src.data_fetcher import MarketDataFetcher
 from src.market_context import build_market_context
@@ -39,6 +40,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Send the report to WeCom. By default the report is only printed.",
     )
+    parser.add_argument(
+        "--report-kind",
+        choices=("daily", "weekly"),
+        default="daily",
+        help="Report mode: daily for workday briefings, weekly for Sunday summaries.",
+    )
     return parser.parse_args(argv)
 
 
@@ -47,8 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings()
     _setup_logging(settings.log_level)
 
-    logger.info("Starting quant briefing for %s", args.run_date)
+    logger.info("Starting %s quant briefing for %s", args.report_kind, args.run_date)
     logger.info("Dry-run mode: %s; send enabled: %s", args.dry_run, args.send)
+    if args.report_kind == "daily" and not is_daily_push_day(args.run_date):
+        logger.info("Skipping daily report for non-workday: %s", args.run_date)
+        return 0
+
     try:
         validate_settings(settings, dry_run=args.dry_run, send=args.send)
     except ConfigError as exc:
@@ -60,33 +71,27 @@ def main(argv: list[str] | None = None) -> int:
     inserted_rules = db_manager.seed_default_rules(settings.database_path)
     logger.info("Database initialized; seeded %s default rules", inserted_rules)
 
-    quote_provider = (
-        _dry_run_quote_provider
-        if args.dry_run
-        else _live_quote_provider(MarketDataFetcher())
-    )
-    quote_provider = _cached_quote_provider(quote_provider)
-    accounting_result = calculator.run_shadow_accounting(
-        args.run_date,
-        db_path=settings.database_path,
-        quote_provider=quote_provider,
-    )
-    logger.info("Shadow-accounting result: %s", accounting_result)
-
-    snapshot = calculator.build_portfolio_snapshot(
-        args.run_date,
-        db_path=settings.database_path,
-        quote_provider=quote_provider,
-    )
-    snapshot["market_context"] = build_market_context(
-        args.run_date,
-        quote_provider=quote_provider
-        if args.dry_run
-        else _cached_quote_provider(
-            _live_quote_provider(MarketDataFetcher(timeout=3.0, retries=0))
-        ),
-    )
-    logger.info("Portfolio snapshot totals: %s", snapshot["totals_by_currency"])
+    if args.report_kind == "daily":
+        snapshot = _build_daily_snapshot(args.run_date, settings=settings, dry_run=args.dry_run)
+        calculator.save_portfolio_snapshot(snapshot, db_path=settings.database_path)
+        logger.info("Portfolio snapshot totals: %s", snapshot["totals_by_currency"])
+    else:
+        snapshot = calculator.build_weekly_summary(args.run_date, db_path=settings.database_path)
+        snapshot_date = snapshot.get("snapshot_date") or snapshot.get("week_end")
+        snapshot["market_context"] = build_market_context(
+            str(snapshot_date),
+            quote_provider=_latest_saved_snapshot_quote_provider(
+                db_path=settings.database_path,
+                max_date=str(snapshot_date),
+            ),
+        )
+        logger.info(
+            "Weekly summary window: %s to %s; snapshot=%s baseline=%s",
+            snapshot.get("week_start"),
+            snapshot.get("week_end"),
+            snapshot.get("snapshot_date"),
+            snapshot.get("baseline_date"),
+        )
 
     reporter_settings = Settings() if args.dry_run else settings
     try:
@@ -94,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
             settings=reporter_settings,
             timeout=AI_REPORT_TIMEOUT_SECONDS,
             fallback_on_failure=args.dry_run,
-        ).generate_report(snapshot)
+        ).generate_report(snapshot, report_kind=args.report_kind)
     except AIReportError as exc:
         logger.error("AI report generation failed: %s", exc)
         return 2
@@ -170,6 +175,18 @@ def _live_quote_provider(fetcher: MarketDataFetcher):
     return provider
 
 
+def _latest_saved_snapshot_quote_provider(*, db_path: str, max_date: str):
+    def provider(asset_code: str, market_type: str, _run_date: str):
+        return db_manager.get_latest_market_snapshot(
+            asset_code=asset_code,
+            market_type=market_type,
+            max_date=max_date,
+            db_path=db_path,
+        )
+
+    return provider
+
+
 def _cached_quote_provider(provider):
     cache: dict[tuple[str, str, str], Any] = {}
 
@@ -180,6 +197,37 @@ def _cached_quote_provider(provider):
         return cache[key]
 
     return cached
+
+
+def _build_daily_snapshot(run_date: str, *, settings: Settings, dry_run: bool) -> dict[str, Any]:
+    quote_provider = (
+        _dry_run_quote_provider
+        if dry_run
+        else _live_quote_provider(MarketDataFetcher())
+    )
+    quote_provider = _cached_quote_provider(quote_provider)
+    accounting_result = calculator.run_shadow_accounting(
+        run_date,
+        db_path=settings.database_path,
+        quote_provider=quote_provider,
+    )
+    logger.info("Shadow-accounting result: %s", accounting_result)
+
+    snapshot = calculator.build_portfolio_snapshot(
+        run_date,
+        db_path=settings.database_path,
+        quote_provider=quote_provider,
+    )
+    snapshot["report_kind"] = "daily"
+    snapshot["market_context"] = build_market_context(
+        run_date,
+        quote_provider=quote_provider
+        if dry_run
+        else _cached_quote_provider(
+            _live_quote_provider(MarketDataFetcher(timeout=3.0, retries=0))
+        ),
+    )
+    return snapshot
 
 
 if __name__ == "__main__":

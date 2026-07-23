@@ -2,18 +2,20 @@
 
 [中文说明](README.zh-CN.md) | English
 
-Quant AI Briefing is a small Python service for personal investment shadow accounting and daily AI briefings. It stores investment rules and shadow trades in SQLite, fetches public market quotes, calculates position cost and floating PnL, asks an OpenAI-compatible chat completion API to write a Markdown report, and can push the report through a WeCom self-built app.
+Quant AI Briefing is a small Python service for personal investment shadow accounting and AI briefings. It stores investment rules, shadow trades, market data, and daily portfolio snapshots in SQLite, calculates position cost and floating PnL, asks an OpenAI-compatible chat completion API to write Markdown daily or weekly reports, and can push them through a WeCom self-built app.
 
 This project does not connect to brokerage trading APIs and does not place real orders. It is intended for personal review, record keeping, and portfolio monitoring.
 
 ## Features
 
-- SQLite-backed investment rules, shadow trades, and market snapshots.
+- SQLite-backed investment rules, shadow trades, market snapshots, and historical portfolio snapshots.
 - Daily, weekly, and monthly rule triggering.
 - Duplicate protection for same-day generated shadow trades.
 - Position cost, market value, daily PnL, floating PnL, and PnL percentage.
 - Public quote sources for US equities, China funds/ETFs, gold, and selected market watchlist assets.
-- AI-generated Markdown investment briefing with a local fallback report.
+- Workday-only daily briefings using the Chinese statutory holiday calendar.
+- Sunday weekly briefings based on persisted Monday-to-Friday snapshots.
+- Separate AI prompts and local fallback templates for daily and weekly reports.
 - WeCom Markdown push notifications with automatic message splitting under WeCom byte limits.
 - `--dry-run` mode for local testing without external AI or push credentials.
 
@@ -67,7 +69,13 @@ python -m src.main
 Generate and push through WeCom:
 
 ```bash
-python -m src.main --send
+python -m src.main --report-kind daily --send
+```
+
+Generate a weekly summary from saved daily snapshots:
+
+```bash
+python -m src.main --report-kind weekly
 ```
 
 Run for a specific date:
@@ -86,12 +94,17 @@ Expected CSV columns:
 asset_name,asset_code,market_type,currency,rule_amount,freq_type,freq_value,enabled,trade_date,amount,price,shares
 ```
 
+Daily mode exits successfully before fetching quotes or calling external APIs on weekends and Chinese statutory holidays. Weekend makeup workdays are still skipped by design. Weekly mode does not create shadow trades or fetch live position quotes; it reads the latest saved snapshots for the completed Monday-to-Friday window.
+
+In live mode, AI configuration is required and an AI API failure stops the run. The deterministic local fallback is used by `--dry-run` for testing.
+
 ## Deployment Example
 
-Example cron job for daily 08:00 push:
+Example cron jobs for weekday daily reports and Sunday weekly reports at 08:00:
 
 ```cron
-0 8 * * * cd /opt/quant-ai-briefing && /usr/bin/flock -n /tmp/quant-ai-briefing.lock /opt/quant-ai-briefing/.venv/bin/python -m src.main --send >> /opt/quant-ai-briefing/cron.log 2>&1
+0 8 * * 1-5 cd /opt/quant-ai-briefing && /usr/bin/flock -n /tmp/quant-ai-briefing.lock /opt/quant-ai-briefing/.venv/bin/python -m src.main --report-kind daily --send >> /opt/quant-ai-briefing/cron.log 2>&1
+0 8 * * 0 cd /opt/quant-ai-briefing && /usr/bin/flock -n /tmp/quant-ai-briefing.lock /opt/quant-ai-briefing/.venv/bin/python -m src.main --report-kind weekly --send >> /opt/quant-ai-briefing/cron.log 2>&1
 ```
 
 Adjust paths for your server.

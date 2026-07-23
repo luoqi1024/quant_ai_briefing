@@ -5,7 +5,7 @@ def test_build_market_context_formats_popular_investments():
     watchlist = (
         WatchAsset("纳指科技", "QQQ", "US", "美股科技"),
         WatchAsset("比特币", "BTCUSDT", "CRYPTO", "数字资产"),
-        WatchAsset("缺失项", "MISSING", "US", "测试"),
+        WatchAsset("缺失项目", "MISSING", "US", "测试"),
     )
 
     def provider(asset_code, market_type, run_date):

@@ -76,14 +76,14 @@ def test_notifier_splits_long_markdown_messages():
         ),
         session=session,
     )
-    content = "### 标题\n\n" + ("这是一段较长的中文日报内容。\n" * 160)
+    content = "### 标题\n\n" + ("这是一段较长的中文简报内容。\n" * 160)
 
     assert notifier.send_markdown(content) is True
     assert len(session.posts) > 1
     for _args, kwargs in session.posts:
         sent = kwargs["json"]["markdown"]["content"]
         assert len(sent.encode("utf-8")) <= MARKDOWN_CONTENT_LIMIT_BYTES + 120
-        assert "投资日报（第 " in sent
+        assert "投资简报（第 " in sent
 
 
 def test_split_markdown_by_bytes_is_utf8_safe():
