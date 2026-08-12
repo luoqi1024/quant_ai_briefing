@@ -411,3 +411,33 @@ def test_ai_reporter_requires_insufficient_coverage_disclosure():
             }
         )
 
+
+def test_ai_reporter_requires_historical_quote_disclosure_and_date():
+    settings = Settings(
+        ai_api_key="key",
+        ai_url="https://example.invalid/chat",
+        ai_model="model",
+    )
+    reporter = AIReporter(
+        settings=settings,
+        session=SuccessfulSession(content="完整基金名称A\n历史快照"),
+    )
+
+    with pytest.raises(AIReportError, match="missing 1 historical quote date"):
+        reporter.generate_report(
+            {
+                "run_date": "2026-05-07",
+                "positions": [{"asset_name": "完整基金名称A"}],
+                "market_context": {
+                    "is_sufficient": True,
+                    "popular_investments": [
+                        {
+                            "asset_code": "QQQ",
+                            "status": "historical_snapshot",
+                            "quote_date": "2026-05-06",
+                        }
+                    ],
+                },
+            }
+        )
+

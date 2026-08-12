@@ -12,12 +12,13 @@ This project does not connect to brokerage trading APIs and does not place real 
 - Daily, weekly, and monthly rule triggering.
 - Duplicate protection for same-day generated shadow trades.
 - Position cost, market value, daily PnL, floating PnL, and PnL percentage.
-- Public quote sources for US equities, China funds/ETFs, gold, and selected market watchlist assets.
+- Tencent/Sina primary and backup quotes for US and China watchlist assets, plus persisted bounded historical fallback.
 - Workday-only daily briefings using the Chinese statutory holiday calendar.
 - Sunday weekly briefings based on persisted Monday-to-Friday snapshots.
 - Separate AI prompts and local fallback templates for daily and weekly reports.
 - WeCom Markdown push notifications with automatic message splitting under WeCom byte limits.
 - `--dry-run` mode for local testing without external AI or push credentials.
+- `--check-market-data` health check without AI, portfolio writes, or notification.
 
 ## Install
 
@@ -83,6 +84,16 @@ Run for a specific date:
 ```bash
 python -m src.main --date 2026-05-07 --dry-run
 ```
+
+Check live watchlist coverage without generating a report or sending a notification:
+
+```bash
+python -m src.main --check-market-data
+```
+
+Successful watchlist quotes are saved in `market_snapshots`. If all live sources fail,
+the daily report may use a clearly labeled historical snapshot up to seven calendar
+days old (one day for crypto). Older snapshots are rejected.
 
 ## Import Example Portfolio
 

@@ -35,6 +35,8 @@ DAILY_SYSTEM_PROMPT = (
     "不得据此断言数据源故障，也不得建议用户手动补行情。"
     "如果 market_context.is_sufficient 为 false，必须明确写出‘有效行情样本不足’，"
     "不得据此判断市场整体方向，也不得基于该观察池提出针对具体持仓的调整建议。"
+    "market_context 中 status 为 historical_snapshot 的行情必须明确标注‘历史快照’并写出 quote_date，"
+    "不得描述成今日实时行情。"
     "建议只能是复盘、风险控制、仓位纪律、定投纪律和观察提醒，不能给确定性的买卖指令。"
     "不得建议加仓、减仓、清仓或合并某一具体持仓。"
     "如果缺少新闻或宏观事件，只能基于涨跌和组合表现做谨慎判断，并明确使用“可能”“倾向于”等表述。"
@@ -52,6 +54,7 @@ WEEKLY_SYSTEM_PROMPT = (
     "positions 是持仓事实的唯一来源，asset_name 必须逐字原样使用，禁止缩写、改名、脱敏或根据 asset_code 猜测品种。"
     "average_cost 是平均成本价，valuation_price 是当前估值价，二者绝不能混淆。"
     "如果 market_context.is_sufficient 为 false，必须明确写出‘有效行情样本不足’，且不得据此判断市场方向。"
+    "market_context 中 status 为 historical_snapshot 的行情必须明确标注‘历史快照’并写出 quote_date。"
     "不要虚构周内新闻、政策或事件；没有可靠信息时，只能基于组合表现和观察池涨跌做谨慎判断。"
     "建议部分仍然只能给复盘、节奏、风险控制和观察提醒，不能给确定性的买卖指令。"
 )
@@ -309,7 +312,11 @@ class AIReporter:
 
 def _append_market_context(lines: list[str], snapshot: dict[str, Any]) -> None:
     market_items = ((snapshot.get("market_context") or {}).get("popular_investments") or [])
-    ok_items = [item for item in market_items if item.get("status") == "ok"]
+    ok_items = [
+        item
+        for item in market_items
+        if item.get("status") in {"ok", "historical_snapshot"}
+    ]
     if not ok_items:
         return
 
@@ -317,13 +324,15 @@ def _append_market_context(lines: list[str], snapshot: dict[str, Any]) -> None:
         [
             "",
             "### 热门投资方式观察",
-            "| 方向 | 代表 | 日涨跌 |",
-            "| --- | --- | ---: |",
+            "| 方向 | 代表 | 日涨跌 | 报价日期 | 状态 |",
+            "| --- | --- | ---: | --- | --- |",
         ]
     )
     for item in ok_items[:8]:
+        status = "历史快照" if item.get("status") == "historical_snapshot" else "最新行情"
         lines.append(
-            f"| {item.get('category')} | {item.get('name')} | {_pct_text(item.get('change_pct'))} |"
+            f"| {item.get('category')} | {item.get('name')} | "
+            f"{_pct_text(item.get('change_pct'))} | {item.get('quote_date') or '暂无'} | {status} |"
         )
 
 
@@ -421,6 +430,20 @@ def _report_validation_error(report: str, snapshot: dict[str, Any]) -> str | Non
     market_context = snapshot.get("market_context") or {}
     if market_context.get("is_sufficient") is False and "有效行情样本不足" not in report:
         errors.append("does not disclose insufficient market quote coverage")
+    historical_items = [
+        item
+        for item in market_context.get("popular_investments") or []
+        if item.get("status") == "historical_snapshot"
+    ]
+    if historical_items and "历史快照" not in report:
+        errors.append("does not disclose historical market snapshot fallback")
+    missing_historical_date_count = sum(
+        str(item.get("quote_date") or "") not in report for item in historical_items
+    )
+    if missing_historical_date_count:
+        errors.append(
+            f"missing {missing_historical_date_count} historical quote date(s)"
+        )
 
     return "; ".join(errors) if errors else None
 

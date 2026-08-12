@@ -39,47 +39,63 @@ class MarketDataFetcher:
 
         if market_type == "US":
             return self._fetch_first_available(
+                asset_code,
                 [
-                    lambda: self._fetch_us_stooq_quote(asset_code),
-                    lambda: self._fetch_us_quote(asset_code),
+                    ("tencent", lambda: self._fetch_tencent_quote(asset_code, "US")),
+                    ("sina", lambda: self._fetch_sina_quote(asset_code, "US")),
+                    ("yfinance", lambda: self._fetch_us_quote(asset_code)),
                 ]
             )
         if market_type == "CN":
             return self._fetch_first_available(
-                [lambda: self._fetch_cn_eastmoney_quote(asset_code)]
+                asset_code,
+                [
+                    ("tencent", lambda: self._fetch_tencent_quote(asset_code, "CN")),
+                    ("sina", lambda: self._fetch_sina_quote(asset_code, "CN")),
+                    ("eastmoney", lambda: self._fetch_cn_eastmoney_quote(asset_code)),
+                ]
                 + [
-                    lambda provider_name=provider_name: self._fetch_cn_quote_from_provider(
-                        asset_code,
-                        provider_name,
+                    (
+                        f"akshare:{provider_name}",
+                        lambda provider_name=provider_name: self._fetch_cn_quote_from_provider(
+                            asset_code,
+                            provider_name,
+                        ),
                     )
                     for provider_name in _cn_provider_order(asset_code)
                 ]
             )
         if market_type == "FUND":
             return self._fetch_first_available(
+                asset_code,
                 [
-                    lambda: self._fetch_fund_estimate_quote(asset_code),
-                    lambda: self._fetch_fund_nav_quote(asset_code),
+                    ("eastmoney_fund_estimate", lambda: self._fetch_fund_estimate_quote(asset_code)),
+                    ("eastmoney_fund_nav", lambda: self._fetch_fund_nav_quote(asset_code)),
                 ]
             )
         if market_type == "MANUAL":
             return None
         if market_type == "GOLD":
             return self._fetch_first_available(
-                [lambda: self._fetch_sge_gold_quote(asset_code)]
+                asset_code,
+                [("sina_sge", lambda: self._fetch_sge_gold_quote(asset_code))]
                 + [
-                    lambda provider_name=provider_name: self._fetch_gold_quote_from_provider(
-                        asset_code,
-                        provider_name,
+                    (
+                        f"akshare:{provider_name}",
+                        lambda provider_name=provider_name: self._fetch_gold_quote_from_provider(
+                            asset_code,
+                            provider_name,
+                        ),
                     )
                     for provider_name in ("spot_gold_spot", "futures_spot_price")
                 ]
             )
         if market_type == "CRYPTO":
             return self._fetch_first_available(
+                asset_code,
                 [
-                    lambda: self._fetch_crypto_coingecko_quote(asset_code),
-                    lambda: self._fetch_crypto_binance_quote(asset_code),
+                    ("coingecko", lambda: self._fetch_crypto_coingecko_quote(asset_code)),
+                    ("binance", lambda: self._fetch_crypto_binance_quote(asset_code)),
                 ]
             )
         logger.warning("Unsupported market type: %s", market_type)
@@ -87,30 +103,131 @@ class MarketDataFetcher:
 
     def _fetch_first_available(
         self,
-        fetchers: list[Callable[[], MarketQuote | None]],
+        asset_code: str,
+        fetchers: list[tuple[str, Callable[[], MarketQuote | None]]],
     ) -> MarketQuote | None:
-        for fetcher in fetchers:
-            quote = self._with_retry(fetcher)
+        for source_name, fetcher in fetchers:
+            quote = self._with_retry(fetcher, asset_code=asset_code, source_name=source_name)
             if quote is not None:
                 return quote
         return None
 
-    def _with_retry(self, fn: Callable[[], MarketQuote | None]) -> MarketQuote | None:
+    def _with_retry(
+        self,
+        fn: Callable[[], MarketQuote | None],
+        *,
+        asset_code: str,
+        source_name: str,
+    ) -> MarketQuote | None:
         for attempt in range(1, self.retries + 2):
             result = _run_with_timeout(fn, self.timeout)
             if result.status == "success" and result.quote is not None:
                 return result.quote
             if result.status == "timeout":
-                logger.warning("Market data request timed out on attempt %s", attempt)
+                logger.warning(
+                    "Market quote timed out: asset=%s source=%s attempt=%s",
+                    asset_code,
+                    source_name,
+                    attempt,
+                )
             elif result.status == "error":
                 logger.warning(
-                    "Market data request failed on attempt %s: %s",
+                    "Market quote failed: asset=%s source=%s attempt=%s error=%s",
+                    asset_code,
+                    source_name,
                     attempt,
                     result.error,
                 )
             else:
-                logger.warning("Market data request returned no data on attempt %s", attempt)
+                logger.warning(
+                    "Market quote returned no data: asset=%s source=%s attempt=%s",
+                    asset_code,
+                    source_name,
+                    attempt,
+                )
         return None
+
+    def _fetch_tencent_quote(self, asset_code: str, market_type: str) -> MarketQuote | None:
+        symbol = _tencent_symbol(asset_code, market_type)
+        if symbol is None:
+            return None
+        response = requests.get(
+            "https://qt.gtimg.cn/q=" + symbol,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://gu.qq.com/",
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        text = response.content.decode("gb18030", errors="replace")
+        match = re.search(r'=\"(.*)\"', text)
+        if match is None:
+            return None
+        fields = match.group(1).split("~")
+        if len(fields) <= 32:
+            return None
+        price = _safe_float(fields[3])
+        previous_close = _safe_float(fields[4])
+        if price is None or price <= 0:
+            return None
+        change_pct = _safe_float(fields[32])
+        if change_pct is None and previous_close:
+            change_pct = (price - previous_close) / previous_close * 100
+        return MarketQuote(
+            asset_code=asset_code,
+            market_type=market_type,
+            price=price,
+            change_pct=change_pct,
+            quote_date=_normalize_quote_date(fields[30]),
+            source="tencent_quote",
+        )
+
+    def _fetch_sina_quote(self, asset_code: str, market_type: str) -> MarketQuote | None:
+        symbol = _sina_symbol(asset_code, market_type)
+        if symbol is None:
+            return None
+        response = requests.get(
+            "https://hq.sinajs.cn/list=" + symbol,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://finance.sina.com.cn/",
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        text = response.content.decode("gb18030", errors="replace")
+        match = re.search(r'\"(.*)\"', text)
+        if match is None:
+            return None
+        fields = match.group(1).split(",")
+        if market_type == "US":
+            if len(fields) <= 3:
+                return None
+            price = _safe_float(fields[1])
+            change_pct = _safe_float(fields[2])
+            quote_date = _normalize_quote_date(fields[3])
+        else:
+            if len(fields) <= 31:
+                return None
+            price = _safe_float(fields[3])
+            previous_close = _safe_float(fields[2])
+            change_pct = (
+                (price - previous_close) / previous_close * 100
+                if price is not None and previous_close
+                else None
+            )
+            quote_date = _normalize_quote_date(fields[30])
+        if price is None or price <= 0:
+            return None
+        return MarketQuote(
+            asset_code=asset_code,
+            market_type=market_type,
+            price=price,
+            change_pct=change_pct,
+            quote_date=quote_date,
+            source="sina_quote",
+        )
 
     def _fetch_us_quote(self, asset_code: str) -> MarketQuote | None:
         import pandas as pd
@@ -485,6 +602,34 @@ def _eastmoney_secid(asset_code: str) -> str:
     code = str(asset_code)
     market_id = "1" if code.startswith(("5", "6", "9")) else "0"
     return f"{market_id}.{code}"
+
+
+def _tencent_symbol(asset_code: str, market_type: str) -> str | None:
+    code = str(asset_code)
+    if market_type == "US":
+        return "us" + code.upper()
+    if market_type == "CN":
+        exchange = "sh" if code.startswith(("5", "6", "9")) else "sz"
+        return exchange + code
+    return None
+
+
+def _sina_symbol(asset_code: str, market_type: str) -> str | None:
+    code = str(asset_code)
+    if market_type == "US":
+        return "gb_" + code.lower()
+    if market_type == "CN":
+        exchange = "sh" if code.startswith(("5", "6", "9")) else "sz"
+        return exchange + code
+    return None
+
+
+def _normalize_quote_date(value: Any) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"(20\d{2})[-/]?(\d{2})[-/]?(\d{2})", text)
+    if match:
+        return "-".join(match.groups())
+    return date.today().isoformat()
 
 
 def _coingecko_coin_id(asset_code: str) -> str | None:
