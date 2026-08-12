@@ -216,6 +216,7 @@ def build_portfolio_snapshot(
             quote_date = None
 
         price = float(price)
+        average_cost = (cost / shares) if shares else None
         market_value = shares * price
         floating_pnl = market_value - cost
         floating_pnl_pct = (floating_pnl / cost * 100) if cost else 0.0
@@ -226,15 +227,28 @@ def build_portfolio_snapshot(
             else None
         )
         currency = position["currency"]
+        is_manual_reconcile = quote_source == "manual-reconcile-screenshot"
+        daily_data_status = (
+            "available"
+            if change_pct is not None
+            else (
+                "manual_reconcile_without_daily_change"
+                if is_manual_reconcile
+                else "unavailable"
+            )
+        )
 
         positions.append(
             {
                 "asset_code": position["asset_code"],
                 "asset_name": position["asset_name"],
+                "market_type": market_type,
                 "currency": currency,
                 "shares": shares,
                 "cost": cost,
+                "average_cost": average_cost,
                 "price": price,
+                "valuation_price": price,
                 "market_value": market_value,
                 "floating_pnl": floating_pnl,
                 "floating_pnl_pct": floating_pnl_pct,
@@ -242,6 +256,8 @@ def build_portfolio_snapshot(
                 "daily_pnl": daily_pnl,
                 "quote_source": quote_source,
                 "quote_date": quote_date,
+                "is_manual_reconcile": is_manual_reconcile,
+                "daily_data_status": daily_data_status,
             }
         )
 
@@ -333,6 +349,10 @@ def build_weekly_summary(
         db_path=db_path,
     )
     end_positions = db_manager.get_position_snapshots(end_snapshot_date, db_path=db_path)
+    rules_by_asset = {
+        rule["asset_code"]: rule
+        for rule in db_manager.get_all_rules(enabled_only=False, db_path=db_path)
+    }
     end_totals_rows = db_manager.get_portfolio_snapshots(end_snapshot_date, db_path=db_path)
     baseline_totals_rows = (
         db_manager.get_portfolio_snapshots(baseline_date, db_path=db_path)
@@ -360,6 +380,27 @@ def build_weekly_summary(
             baseline["floating_pnl"]
         ) if baseline else None
         position = dict(row)
+        shares = float(row["shares"])
+        cost = float(row["cost"])
+        quote_source = str(row.get("quote_source") or "")
+        change_pct = row.get("change_pct")
+        position["market_type"] = rules_by_asset.get(row["asset_code"], {}).get(
+            "market_type", ""
+        )
+        position["average_cost"] = (cost / shares) if shares else None
+        position["valuation_price"] = float(row["price"])
+        position["is_manual_reconcile"] = (
+            quote_source == "manual-reconcile-screenshot"
+        )
+        position["daily_data_status"] = (
+            "available"
+            if change_pct is not None
+            else (
+                "manual_reconcile_without_daily_change"
+                if position["is_manual_reconcile"]
+                else "unavailable"
+            )
+        )
         position["weekly_market_value_change"] = weekly_market_value_change
         position["weekly_floating_pnl_change"] = weekly_floating_pnl_change
         positions.append(position)
@@ -437,3 +478,4 @@ def _as_optional_float(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
+

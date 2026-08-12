@@ -96,10 +96,15 @@ def test_build_portfolio_snapshot_calculates_positions_and_pnl(tmp_path):
 
     assert qqq["shares"] == 1.25
     assert qqq["cost"] == 500.0
+    assert qqq["average_cost"] == 400.0
+    assert qqq["valuation_price"] == 420.0
+    assert qqq["market_type"] == "US"
     assert qqq["market_value"] == 525.0
     assert qqq["floating_pnl"] == 25.0
     assert qqq["floating_pnl_pct"] == 5.0
     assert qqq["daily_pnl"] == 525.0 * 0.8 / 100.8
+    assert qqq["daily_data_status"] == "available"
+    assert qqq["is_manual_reconcile"] is False
 
     assert cn["shares"] == 500.0
     assert cn["cost"] == 1000.0
@@ -151,7 +156,7 @@ def test_build_portfolio_snapshot_prefers_manual_reconcile_quote(tmp_path):
         market_type="US",
         date="2026-05-07",
         price=410.0,
-        change_pct=-0.5,
+        change_pct=None,
         source="manual-reconcile-screenshot",
         db_path=db_path,
     )
@@ -173,8 +178,11 @@ def test_build_portfolio_snapshot_prefers_manual_reconcile_quote(tmp_path):
 
     assert qqq["price"] == 410.0
     assert qqq["market_value"] == 512.5
-    assert qqq["change_pct"] == -0.5
+    assert qqq["change_pct"] is None
+    assert qqq["daily_pnl"] is None
     assert qqq["quote_source"] == "manual-reconcile-screenshot"
+    assert qqq["is_manual_reconcile"] is True
+    assert qqq["daily_data_status"] == "manual_reconcile_without_daily_change"
 
 
 def test_build_portfolio_snapshot_falls_back_to_average_cost_without_quote(tmp_path):
@@ -200,9 +208,12 @@ def test_build_portfolio_snapshot_falls_back_to_average_cost_without_quote(tmp_p
     qqq = snapshot["positions"][0]
 
     assert qqq["price"] == 100.0
+    assert qqq["average_cost"] == 100.0
+    assert qqq["valuation_price"] == 100.0
     assert qqq["market_value"] == 500.0
     assert qqq["floating_pnl"] == 0.0
     assert qqq["quote_source"] == "average_cost_fallback"
+    assert qqq["daily_data_status"] == "unavailable"
 
 
 def test_save_portfolio_snapshot_persists_daily_snapshot(tmp_path):
@@ -258,6 +269,11 @@ def test_build_weekly_summary_uses_saved_snapshots(tmp_path):
     assert summary["week_end"] == "2026-06-19"
     assert summary["weekly_changes_by_currency"]["USD"]["market_value_change"] is not None
     assert summary["top_contributor"] is not None
+    qqq = next(item for item in summary["positions"] if item["asset_code"] == "QQQ")
+    assert qqq["market_type"] == "US"
+    assert qqq["average_cost"] is not None
+    assert qqq["valuation_price"] == qqq["price"]
+    assert qqq["daily_data_status"] == "available"
 
 
 def test_build_weekly_summary_handles_empty_week(tmp_path):
@@ -268,3 +284,4 @@ def test_build_weekly_summary_handles_empty_week(tmp_path):
     assert summary["has_week_data"] is False
     assert summary["positions"] == []
     assert summary["totals_by_currency"] == {}
+

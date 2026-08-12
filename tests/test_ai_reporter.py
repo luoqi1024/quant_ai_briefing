@@ -16,9 +16,12 @@ class Response:
 
 
 class SuccessfulSession:
+    def __init__(self, content="生成后的报告"):
+        self.content = content
+
     def post(self, *args, **kwargs):
         self.last_payload = kwargs["json"]
-        return Response({"choices": [{"message": {"content": "生成后的报告"}}]})
+        return Response({"choices": [{"message": {"content": self.content}}]})
 
 
 class FailingSession:
@@ -125,7 +128,7 @@ def test_ai_reporter_sends_daily_prompt_and_market_context():
         ai_url="https://example.invalid/chat",
         ai_model="model",
     )
-    session = SuccessfulSession()
+    session = SuccessfulSession(content="纳指基金A\n有效行情样本不足")
     reporter = AIReporter(settings=settings, session=session)
 
     report = reporter.generate_report(
@@ -146,6 +149,10 @@ def test_ai_reporter_sends_daily_prompt_and_market_context():
                 }
             ],
             "market_context": {
+                "available_count": 1,
+                "missing_count": 8,
+                "total_count": 9,
+                "is_sufficient": False,
                 "popular_investments": [
                     {
                         "name": "纳指科技",
@@ -162,9 +169,13 @@ def test_ai_reporter_sends_daily_prompt_and_market_context():
     system_prompt = session.last_payload["messages"][0]["content"]
     user_payload = session.last_payload["messages"][1]["content"]
 
-    assert report == "生成后的报告"
+    assert report == "纳指基金A\n有效行情样本不足"
     assert "投资日报" in system_prompt
     assert "daily_pnl" in system_prompt
+    assert "asset_name 必须逐字原样使用" in system_prompt
+    assert "average_cost 是平均成本价" in system_prompt
+    assert "valuation_price 是当前估值价" in system_prompt
+    assert "有效行情样本不足" in system_prompt
     assert "纳指科技" in user_payload
     assert "daily_pnl" in user_payload
 
@@ -225,3 +236,92 @@ def test_ai_reporter_accepts_legacy_xiaomi_settings():
 
     assert report
     assert session.last_payload["model"] == "legacy-model"
+
+
+def test_ai_reporter_rejects_report_that_changes_asset_name():
+    settings = Settings(
+        ai_api_key="key",
+        ai_url="https://example.invalid/chat",
+        ai_model="model",
+    )
+    reporter = AIReporter(
+        settings=settings,
+        session=SuccessfulSession(content="缩写后的基金名称"),
+    )
+
+    with pytest.raises(
+        AIReportError,
+        match=r"^AI report validation failed: missing 1 exact asset name",
+    ):
+        reporter.generate_report(
+            {
+                "run_date": "2026-05-07",
+                "positions": [{"asset_name": "完整基金名称A"}],
+            }
+        )
+
+
+def test_ai_reporter_rejects_redaction_placeholder():
+    settings = Settings(
+        ai_api_key="key",
+        ai_url="https://example.invalid/chat",
+        ai_model="model",
+    )
+    reporter = AIReporter(
+        settings=settings,
+        session=SuccessfulSession(content="完整基金名称A（名称脱敏）"),
+    )
+
+    with pytest.raises(AIReportError, match="forbidden redaction placeholder"):
+        reporter.generate_report(
+            {
+                "run_date": "2026-05-07",
+                "positions": [{"asset_name": "完整基金名称A"}],
+            }
+        )
+
+
+def test_ai_reporter_rejects_asset_code_without_exact_name_on_same_line():
+    settings = Settings(
+        ai_api_key="key",
+        ai_url="https://example.invalid/chat",
+        ai_model="model",
+    )
+    reporter = AIReporter(
+        settings=settings,
+        session=SuccessfulSession(
+            content="摩根标普500指数A\n017641 被错误写成另一类指数"
+        ),
+    )
+
+    with pytest.raises(AIReportError, match="asset code line"):
+        reporter.generate_report(
+            {
+                "run_date": "2026-05-07",
+                "positions": [
+                    {"asset_code": "017641", "asset_name": "摩根标普500指数A"}
+                ],
+            }
+        )
+
+
+def test_ai_reporter_requires_insufficient_coverage_disclosure():
+    settings = Settings(
+        ai_api_key="key",
+        ai_url="https://example.invalid/chat",
+        ai_model="model",
+    )
+    reporter = AIReporter(
+        settings=settings,
+        session=SuccessfulSession(content="完整基金名称A"),
+    )
+
+    with pytest.raises(AIReportError, match="insufficient market quote coverage"):
+        reporter.generate_report(
+            {
+                "run_date": "2026-05-07",
+                "positions": [{"asset_name": "完整基金名称A"}],
+                "market_context": {"is_sufficient": False},
+            }
+        )
+
