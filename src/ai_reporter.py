@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 import requests
@@ -377,6 +378,45 @@ def _report_validation_error(report: str, snapshot: dict[str, Any]) -> str | Non
 
     if "名称脱敏" in report or "已脱敏" in report:
         errors.append("contains forbidden redaction placeholder")
+
+    mislabeled_valuation_count = 0
+    for item in positions:
+        valuation_price = item.get("valuation_price", item.get("price"))
+        average_cost = item.get("average_cost")
+        if valuation_price is None or average_cost is None:
+            continue
+        if abs(float(valuation_price) - float(average_cost)) < 0.005:
+            continue
+
+        valuation_texts = {
+            f"{float(valuation_price):.2f}",
+            f"{float(valuation_price):.1f}",
+        }
+        average_cost_texts = {
+            f"{float(average_cost):.2f}",
+            f"{float(average_cost):.1f}",
+        }
+        for line in report_lines:
+            if any(value in line for value in average_cost_texts):
+                continue
+            for value in valuation_texts:
+                escaped_value = re.escape(value)
+                cost_before_value = re.search(
+                    rf"(?:平均成本|成本价|持仓成本对应(?:的)?价格|成本对应(?:的)?价格)"
+                    rf"[^0-9\n]{{0,12}}{escaped_value}",
+                    line,
+                )
+                cost_after_value = re.search(
+                    rf"{escaped_value}[^。；;\n]{{0,12}}(?:平均成本|成本价)",
+                    line,
+                )
+                if cost_before_value or cost_after_value:
+                    mislabeled_valuation_count += 1
+                    break
+    if mislabeled_valuation_count:
+        errors.append(
+            f"labels valuation price as average cost on {mislabeled_valuation_count} line(s)"
+        )
 
     market_context = snapshot.get("market_context") or {}
     if market_context.get("is_sufficient") is False and "有效行情样本不足" not in report:
