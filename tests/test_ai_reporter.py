@@ -261,6 +261,34 @@ def test_ai_reporter_rejects_report_that_changes_asset_name():
         )
 
 
+@pytest.mark.parametrize("corrupted_name", ["????100ETF", "损坏名称\ufffd"])
+def test_ai_reporter_rejects_corrupted_snapshot_name_before_api(corrupted_name):
+    settings = Settings(
+        ai_api_key="key",
+        ai_url="https://example.invalid/chat",
+        ai_model="model",
+    )
+    session = SuccessfulSession(content=corrupted_name)
+    reporter = AIReporter(
+        settings=settings,
+        session=session,
+        fallback_on_failure=True,
+    )
+
+    with pytest.raises(
+        AIReportError,
+        match=r"^Snapshot validation failed: found 1 corrupted asset name",
+    ):
+        reporter.generate_report(
+            {
+                "run_date": "2026-05-07",
+                "positions": [{"asset_name": corrupted_name}],
+            }
+        )
+
+    assert not hasattr(session, "last_payload")
+
+
 def test_ai_reporter_rejects_redaction_placeholder():
     settings = Settings(
         ai_api_key="key",

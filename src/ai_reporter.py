@@ -87,6 +87,10 @@ class AIReporter:
         if report_kind not in {"daily", "weekly"}:
             raise AIReportError(f"Unsupported report kind: {report_kind}")
 
+        snapshot_error = _snapshot_validation_error(snapshot)
+        if snapshot_error:
+            raise AIReportError(f"Snapshot validation failed: {snapshot_error}")
+
         if not self._configured():
             return self._handle_failure("AI settings are incomplete", snapshot, report_kind)
 
@@ -326,6 +330,20 @@ def _system_prompt(report_kind: str) -> str:
     if report_kind == "weekly":
         return WEEKLY_SYSTEM_PROMPT
     return DAILY_SYSTEM_PROMPT
+
+
+def _snapshot_validation_error(snapshot: dict[str, Any]) -> str | None:
+    """Reject corrupted source labels before they can reach any report path."""
+
+    corrupted_name_count = 0
+    for item in snapshot.get("positions") or []:
+        asset_name = str(item.get("asset_name", "")).strip()
+        if "?" in asset_name or "\ufffd" in asset_name:
+            corrupted_name_count += 1
+
+    if corrupted_name_count:
+        return f"found {corrupted_name_count} corrupted asset name(s)"
+    return None
 
 
 def _report_validation_error(report: str, snapshot: dict[str, Any]) -> str | None:
