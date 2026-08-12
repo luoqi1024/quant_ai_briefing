@@ -8,6 +8,7 @@ from typing import Any
 
 
 QuoteProvider = Callable[[str, str, str], Any]
+MIN_SUFFICIENT_QUOTES = 3
 
 
 @dataclass(frozen=True)
@@ -40,7 +41,14 @@ def build_market_context(
     """Fetch a compact cross-asset watchlist for the report prompt."""
 
     if quote_provider is None:
-        return {"run_date": run_date, "popular_investments": []}
+        return {
+            "run_date": run_date,
+            "popular_investments": [],
+            "available_count": 0,
+            "missing_count": len(watchlist),
+            "total_count": len(watchlist),
+            "is_sufficient": False,
+        }
 
     items: list[dict[str, Any]] = []
     for asset in watchlist:
@@ -72,7 +80,17 @@ def build_market_context(
             }
         )
 
-    return {"run_date": run_date, "popular_investments": items}
+    available_count = sum(item.get("status") == "ok" for item in items)
+    total_count = len(items)
+    required_count = min(MIN_SUFFICIENT_QUOTES, total_count)
+    return {
+        "run_date": run_date,
+        "popular_investments": items,
+        "available_count": available_count,
+        "missing_count": total_count - available_count,
+        "total_count": total_count,
+        "is_sufficient": total_count > 0 and available_count >= required_count,
+    }
 
 
 def _quote_value(quote: Any, key: str, default: Any = None) -> Any:
@@ -81,3 +99,4 @@ def _quote_value(quote: Any, key: str, default: Any = None) -> Any:
     if isinstance(quote, dict):
         return quote.get(key, default)
     return getattr(quote, key, default)
+
