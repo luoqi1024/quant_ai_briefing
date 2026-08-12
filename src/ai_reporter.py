@@ -23,8 +23,19 @@ DAILY_SYSTEM_PROMPT = (
     "4. 热门投资方式涨跌表；5. 结合观察池给出市场评价；6. 给出 2 到 4 条纪律性建议或明日观察点。"
     "持仓明细表必须逐一列出 positions 中的每项资产，至少包含资产名称、市值、成本、今日涨跌、"
     "今日盈亏 daily_pnl、累计盈亏 floating_pnl、累计盈亏率 floating_pnl_pct。"
+    "positions 是持仓事实的唯一来源。asset_name 必须逐字原样使用，禁止缩写、改名、脱敏或根据 asset_code 猜测品种；"
+    "如果正文使用 asset_code，同一行必须同时出现对应的完整 asset_name。"
+    "输入中的资产名称已经获准用于报告，禁止出现‘名称脱敏’或类似占位文字。"
+    "market_type 只是市场类型；average_cost 是平均成本价，valuation_price 是当前估值价，二者绝不能混淆。"
+    "price 与 valuation_price 含义相同；除非明确引用 average_cost，否则不得自行推导或描述成本价。"
+    "positions 的持仓估值与 market_context 的观察池行情来自不同用途；来源不同的报价不得相互替代或直接当作同一价格比较。"
     "如果 daily_pnl 为空，要写“暂无”，不要虚构。金额统一保留两位小数。"
+    "daily_data_status 为 manual_reconcile_without_daily_change 时，只能说明手工对账未提供单日涨跌，"
+    "不得据此断言数据源故障，也不得建议用户手动补行情。"
+    "如果 market_context.is_sufficient 为 false，必须明确写出‘有效行情样本不足’，"
+    "不得据此判断市场整体方向，也不得基于该观察池提出针对具体持仓的调整建议。"
     "建议只能是复盘、风险控制、仓位纪律、定投纪律和观察提醒，不能给确定性的买卖指令。"
+    "不得建议加仓、减仓、清仓或合并某一具体持仓。"
     "如果缺少新闻或宏观事件，只能基于涨跌和组合表现做谨慎判断，并明确使用“可能”“倾向于”等表述。"
 )
 
@@ -37,6 +48,9 @@ WEEKLY_SYSTEM_PROMPT = (
     "如果提供了 baseline_date 和 weekly_changes_by_currency，需要明确写出相对上周基线的市值变化与浮盈变化。"
     "如果 baseline_date 为空，必须明确说明“缺少上周基线，本周仅展示期末快照，不展示周环比”。"
     "持仓明细表至少包含资产名称、期末市值、成本、本周浮盈变化、累计浮盈、累计浮盈率。"
+    "positions 是持仓事实的唯一来源，asset_name 必须逐字原样使用，禁止缩写、改名、脱敏或根据 asset_code 猜测品种。"
+    "average_cost 是平均成本价，valuation_price 是当前估值价，二者绝不能混淆。"
+    "如果 market_context.is_sufficient 为 false，必须明确写出‘有效行情样本不足’，且不得据此判断市场方向。"
     "不要虚构周内新闻、政策或事件；没有可靠信息时，只能基于组合表现和观察池涨跌做谨慎判断。"
     "建议部分仍然只能给复盘、节奏、风险控制和观察提醒，不能给确定性的买卖指令。"
 )
@@ -85,7 +99,7 @@ class AIReporter:
                     "content": json.dumps(snapshot, ensure_ascii=False),
                 },
             ],
-            "temperature": 0.45 if report_kind == "daily" else 0.4,
+            "temperature": 0.2,
         }
         try:
             response = self.session.post(
@@ -106,7 +120,16 @@ class AIReporter:
                     snapshot,
                     report_kind,
                 )
+            validation_error = _report_validation_error(report, snapshot)
+            if validation_error:
+                return self._handle_failure(
+                    f"AI report validation failed: {validation_error}",
+                    snapshot,
+                    report_kind,
+                )
             return report
+        except AIReportError:
+            raise
         except Exception as exc:  # noqa: BLE001 - remote APIs can fail many ways.
             return self._handle_failure(f"AI report API failed: {exc}", snapshot, report_kind)
 
@@ -305,6 +328,45 @@ def _system_prompt(report_kind: str) -> str:
     return DAILY_SYSTEM_PROMPT
 
 
+def _report_validation_error(report: str, snapshot: dict[str, Any]) -> str | None:
+    """Return a safe validation error when AI output alters source facts."""
+
+    errors: list[str] = []
+    positions = snapshot.get("positions") or []
+    expected_names = {
+        str(item.get("asset_name", "")).strip()
+        for item in positions
+        if str(item.get("asset_name", "")).strip()
+    }
+    missing_name_count = sum(name not in report for name in expected_names)
+    if missing_name_count:
+        errors.append(f"missing {missing_name_count} exact asset name(s)")
+
+    mismatched_code_line_count = 0
+    report_lines = report.splitlines()
+    for item in positions:
+        asset_code = str(item.get("asset_code", "")).strip()
+        asset_name = str(item.get("asset_name", "")).strip()
+        if not asset_code or not asset_name:
+            continue
+        mismatched_code_line_count += sum(
+            asset_code in line and asset_name not in line for line in report_lines
+        )
+    if mismatched_code_line_count:
+        errors.append(
+            f"contains {mismatched_code_line_count} asset code line(s) without exact name"
+        )
+
+    if "名称脱敏" in report or "已脱敏" in report:
+        errors.append("contains forbidden redaction placeholder")
+
+    market_context = snapshot.get("market_context") or {}
+    if market_context.get("is_sufficient") is False and "有效行情样本不足" not in report:
+        errors.append("does not disclose insufficient market quote coverage")
+
+    return "; ".join(errors) if errors else None
+
+
 def _money_text(value: Any) -> str:
     if value is None:
         return "暂无"
@@ -332,3 +394,4 @@ def _build_retry_session(retries: int) -> requests.Session:
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     return session
+
