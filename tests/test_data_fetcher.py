@@ -10,10 +10,11 @@ from src.data_fetcher import MarketDataFetcher, MarketQuote
 def test_fetch_quote_returns_none_when_external_api_fails(monkeypatch):
     fetcher = MarketDataFetcher(timeout=0.1, retries=0)
 
-    def fail(_asset_code):
+    def fail(*_args):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(fetcher, "_fetch_us_stooq_quote", fail)
+    monkeypatch.setattr(fetcher, "_fetch_tencent_quote", fail)
+    monkeypatch.setattr(fetcher, "_fetch_sina_quote", fail)
     monkeypatch.setattr(fetcher, "_fetch_us_quote", fail)
 
     assert fetcher.fetch_quote("QQQ", "US") is None
@@ -29,7 +30,7 @@ def test_fetch_quote_uses_mockable_fetch_methods(monkeypatch):
         quote_date="2026-05-07",
         source="mock",
     )
-    monkeypatch.setattr(fetcher, "_fetch_us_stooq_quote", lambda _asset_code: quote)
+    monkeypatch.setattr(fetcher, "_fetch_tencent_quote", lambda *_args: quote)
 
     assert fetcher.fetch_quote("QQQ", "US") == quote
 
@@ -62,11 +63,12 @@ def test_cn_quote_parses_akshare_chinese_columns():
 def test_fetch_quote_timeout_returns_promptly(monkeypatch):
     fetcher = MarketDataFetcher(timeout=0.05, retries=0)
 
-    def slow(_asset_code):
+    def slow(*_args):
         time.sleep(2)
         return None
 
-    monkeypatch.setattr(fetcher, "_fetch_us_stooq_quote", slow)
+    monkeypatch.setattr(fetcher, "_fetch_tencent_quote", slow)
+    monkeypatch.setattr(fetcher, "_fetch_sina_quote", lambda *_args: None)
     monkeypatch.setattr(fetcher, "_fetch_us_quote", lambda _asset_code: None)
     start = time.monotonic()
 
@@ -102,6 +104,8 @@ def test_cn_fetch_tries_next_provider_after_timeout(monkeypatch):
         )
 
     monkeypatch.setattr(fetcher, "_fetch_cn_eastmoney_quote", lambda _asset_code: None)
+    monkeypatch.setattr(fetcher, "_fetch_tencent_quote", lambda *_args: None)
+    monkeypatch.setattr(fetcher, "_fetch_sina_quote", lambda *_args: None)
     monkeypatch.setattr(fetcher, "_fetch_cn_quote_from_provider", fake_provider)
     start = time.monotonic()
 
@@ -114,15 +118,64 @@ def test_cn_fetch_tries_next_provider_after_timeout(monkeypatch):
 
 
 class _Response:
-    def __init__(self, text="", payload=None):
+    def __init__(self, text="", payload=None, content=None):
         self.text = text
         self._payload = payload
+        self.content = content if content is not None else text.encode()
 
     def raise_for_status(self):
         return None
 
     def json(self):
         return self._payload
+
+
+def test_tencent_us_quote_parses_compact_response(monkeypatch):
+    fetcher = MarketDataFetcher(timeout=0.1, retries=0)
+    fields = [""] * 33
+    fields[3] = "420.00"
+    fields[4] = "418.00"
+    fields[30] = "2026-05-07 16:00:00"
+    fields[32] = "0.48"
+
+    def fake_get(url, **kwargs):
+        assert url == "https://qt.gtimg.cn/q=usQQQ"
+        return _Response(content=(f'v_usQQQ="{"~".join(fields)}";').encode())
+
+    monkeypatch.setattr(data_fetcher.requests, "get", fake_get)
+
+    quote = fetcher._fetch_tencent_quote("QQQ", "US")
+
+    assert quote == MarketQuote(
+        asset_code="QQQ",
+        market_type="US",
+        price=420.0,
+        change_pct=0.48,
+        quote_date="2026-05-07",
+        source="tencent_quote",
+    )
+
+
+def test_sina_cn_quote_parses_compact_response(monkeypatch):
+    fetcher = MarketDataFetcher(timeout=0.1, retries=0)
+    fields = [""] * 32
+    fields[2] = "3.80"
+    fields[3] = "3.84"
+    fields[30] = "2026-05-07"
+
+    def fake_get(url, **kwargs):
+        assert url == "https://hq.sinajs.cn/list=sh510300"
+        return _Response(content=(f'v_sh510300="{",".join(fields)}";').encode())
+
+    monkeypatch.setattr(data_fetcher.requests, "get", fake_get)
+
+    quote = fetcher._fetch_sina_quote("510300", "CN")
+
+    assert quote is not None
+    assert quote.price == 3.84
+    assert quote.change_pct == pytest.approx((3.84 - 3.8) / 3.8 * 100)
+    assert quote.quote_date == "2026-05-07"
+    assert quote.source == "sina_quote"
 
 
 def test_us_stooq_backup_parses_single_quote(monkeypatch):

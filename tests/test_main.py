@@ -1,5 +1,6 @@
 from src import calculator, db_manager, main
 from src.config import Settings
+from src.data_fetcher import MarketQuote
 
 
 def test_main_dry_run_completes_without_sending(tmp_path, monkeypatch, capsys):
@@ -63,6 +64,129 @@ def test_cached_quote_provider_avoids_duplicate_run_requests(tmp_path):
         ("QQQ", "US", "2026-05-07"),
         ("159915", "CN", "2026-05-07"),
     ]
+
+
+def test_market_context_provider_persists_live_quote(tmp_path):
+    db_path = tmp_path / "market_context.db"
+    db_manager.init_db(db_path)
+
+    class Fetcher:
+        def fetch_quote(self, asset_code, market_type):
+            return MarketQuote(
+                asset_code=asset_code,
+                market_type=market_type,
+                price=420.0,
+                change_pct=0.8,
+                quote_date="2026-05-07",
+                source="tencent_quote",
+            )
+
+    provider = main._persistent_market_context_quote_provider(
+        fetcher=Fetcher(),
+        db_path=str(db_path),
+    )
+
+    quote = provider("QQQ", "US", "2026-05-07")
+    saved = db_manager.get_market_snapshot(
+        asset_code="QQQ",
+        market_type="US",
+        date="2026-05-07",
+        db_path=db_path,
+    )
+
+    assert quote.source == "tencent_quote"
+    assert saved is not None
+    assert saved["source"] == "tencent_quote"
+
+
+def test_market_context_provider_uses_recent_snapshot_after_live_failure(tmp_path):
+    db_path = tmp_path / "market_context.db"
+    db_manager.init_db(db_path)
+    db_manager.upsert_market_snapshot(
+        asset_code="QQQ",
+        market_type="US",
+        date="2026-05-06",
+        price=420.0,
+        change_pct=0.8,
+        source="tencent_quote",
+        db_path=db_path,
+    )
+
+    class Fetcher:
+        def fetch_quote(self, *_args):
+            return None
+
+    provider = main._persistent_market_context_quote_provider(
+        fetcher=Fetcher(),
+        db_path=str(db_path),
+    )
+
+    quote = provider("QQQ", "US", "2026-05-07")
+
+    assert quote is not None
+    assert quote["is_historical"] is True
+    assert quote["stale_days"] == 1
+    assert quote["quote_date"] == "2026-05-06"
+    assert quote["source"] == "historical_snapshot:tencent_quote"
+
+
+def test_market_context_provider_rejects_expired_snapshot(tmp_path):
+    db_path = tmp_path / "market_context.db"
+    db_manager.init_db(db_path)
+    db_manager.upsert_market_snapshot(
+        asset_code="QQQ",
+        market_type="US",
+        date="2026-04-29",
+        price=420.0,
+        change_pct=0.8,
+        source="tencent_quote",
+        db_path=db_path,
+    )
+
+    class Fetcher:
+        def fetch_quote(self, *_args):
+            return None
+
+    provider = main._persistent_market_context_quote_provider(
+        fetcher=Fetcher(),
+        db_path=str(db_path),
+    )
+
+    assert provider("QQQ", "US", "2026-05-07") is None
+
+
+def test_market_health_check_skips_ai_and_notification(monkeypatch, capsys):
+    monkeypatch.setattr(main, "load_settings", lambda: Settings())
+    monkeypatch.setattr(
+        main.MarketDataFetcher,
+        "fetch_quote",
+        lambda self, asset_code, market_type: MarketQuote(
+            asset_code=asset_code,
+            market_type=market_type,
+            price=100.0,
+            change_pct=0.0,
+            quote_date="2026-05-07",
+            source="mock",
+        ),
+    )
+    monkeypatch.setattr(
+        main.AIReporter,
+        "generate_report",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("AI must not run")),
+    )
+    monkeypatch.setattr(
+        main.WeComNotifier,
+        "send_markdown",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("notification must not run")
+        ),
+    )
+
+    exit_code = main.main(["--date", "2026-05-07", "--check-market-data"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "coverage=9/9" in output
 
 
 def test_main_skips_non_workday_before_runtime_actions(monkeypatch):

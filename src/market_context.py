@@ -66,21 +66,25 @@ def build_market_context(
             )
             continue
 
-        items.append(
-            {
-                "name": asset.name,
-                "category": asset.category,
-                "asset_code": asset.asset_code,
-                "market_type": asset.market_type,
-                "price": float(price),
-                "change_pct": _quote_value(quote, "change_pct"),
-                "quote_date": _quote_value(quote, "quote_date", _quote_value(quote, "date")),
-                "source": _quote_value(quote, "source"),
-                "status": "ok",
-            }
-        )
+        is_historical = bool(_quote_value(quote, "is_historical", False))
+        item = {
+            "name": asset.name,
+            "category": asset.category,
+            "asset_code": asset.asset_code,
+            "market_type": asset.market_type,
+            "price": float(price),
+            "change_pct": _quote_value(quote, "change_pct"),
+            "quote_date": _quote_value(quote, "quote_date", _quote_value(quote, "date")),
+            "source": _quote_value(quote, "source"),
+            "status": "historical_snapshot" if is_historical else "ok",
+        }
+        if is_historical:
+            item["stale_days"] = _quote_value(quote, "stale_days")
+        items.append(item)
 
-    available_count = sum(item.get("status") == "ok" for item in items)
+    available_count = sum(
+        item.get("status") in {"ok", "historical_snapshot"} for item in items
+    )
     total_count = len(items)
     required_count = min(MIN_SUFFICIENT_QUOTES, total_count)
     return {

@@ -13,7 +13,7 @@ from src.ai_reporter import AIReportError, AIReporter
 from src.business_calendar import is_daily_push_day
 from src.config import ConfigError, Settings, load_settings, validate_settings
 from src.data_fetcher import MarketDataFetcher
-from src.market_context import build_market_context
+from src.market_context import POPULAR_INVESTMENT_WATCHLIST, build_market_context
 from src.notifier import WeComNotifier
 
 
@@ -46,6 +46,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="daily",
         help="Report mode: daily for workday briefings, weekly for Sunday summaries.",
     )
+    parser.add_argument(
+        "--check-market-data",
+        action="store_true",
+        help="Check public watchlist quotes without AI, portfolio writes, or notification.",
+    )
     return parser.parse_args(argv)
 
 
@@ -53,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     settings = load_settings()
     _setup_logging(settings.log_level)
+
+    if args.check_market_data:
+        return _run_market_health_check(args.run_date)
 
     logger.info("Starting %s quant briefing for %s", args.report_kind, args.run_date)
     logger.info("Dry-run mode: %s; send enabled: %s", args.dry_run, args.send)
@@ -187,6 +195,62 @@ def _latest_saved_snapshot_quote_provider(*, db_path: str, max_date: str):
     return provider
 
 
+def _persistent_market_context_quote_provider(
+    *,
+    fetcher: MarketDataFetcher,
+    db_path: str,
+):
+    """Persist live watchlist quotes and use a bounded historical fallback."""
+
+    def provider(asset_code: str, market_type: str, run_date: str):
+        quote = fetcher.fetch_quote(asset_code, market_type)
+        if quote is not None:
+            db_manager.upsert_market_snapshot(
+                asset_code=asset_code,
+                market_type=market_type,
+                date=quote.quote_date,
+                price=float(quote.price),
+                change_pct=quote.change_pct,
+                source=quote.source,
+                db_path=db_path,
+            )
+            return quote
+
+        saved = db_manager.get_latest_market_snapshot(
+            asset_code=asset_code,
+            market_type=market_type,
+            max_date=run_date,
+            db_path=db_path,
+        )
+        if saved is None:
+            return None
+        try:
+            stale_days = (
+                date.fromisoformat(run_date) - date.fromisoformat(str(saved["date"]))
+            ).days
+        except (KeyError, TypeError, ValueError):
+            return None
+        max_stale_days = 1 if market_type == "CRYPTO" else 7
+        if stale_days < 0 or stale_days > max_stale_days:
+            return None
+
+        fallback = dict(saved)
+        fallback["quote_date"] = str(saved["date"])
+        fallback["source"] = f"historical_snapshot:{saved.get('source') or 'unknown'}"
+        fallback["is_historical"] = True
+        fallback["stale_days"] = stale_days
+        logger.warning(
+            "Using historical market quote: asset=%s market=%s quote_date=%s stale_days=%s",
+            asset_code,
+            market_type,
+            fallback["quote_date"],
+            stale_days,
+        )
+        return fallback
+
+    return provider
+
+
 def _cached_quote_provider(provider):
     cache: dict[tuple[str, str, str], Any] = {}
 
@@ -224,10 +288,42 @@ def _build_daily_snapshot(run_date: str, *, settings: Settings, dry_run: bool) -
         quote_provider=quote_provider
         if dry_run
         else _cached_quote_provider(
-            _live_quote_provider(MarketDataFetcher(timeout=3.0, retries=0))
+            _persistent_market_context_quote_provider(
+                fetcher=MarketDataFetcher(timeout=3.0, retries=0),
+                db_path=settings.database_path,
+            )
         ),
     )
     return snapshot
+
+
+def _run_market_health_check(run_date: str) -> int:
+    context = build_market_context(
+        run_date,
+        quote_provider=_cached_quote_provider(
+            _live_quote_provider(MarketDataFetcher(timeout=3.0, retries=0))
+        ),
+    )
+    by_code = {
+        item["asset_code"]: item for item in context.get("popular_investments", [])
+    }
+    for asset in POPULAR_INVESTMENT_WATCHLIST:
+        item = by_code.get(asset.asset_code, {})
+        print(
+            "asset={code} status={status} source={source} quote_date={quote_date}".format(
+                code=asset.asset_code,
+                status=item.get("status", "missing_quote"),
+                source=item.get("source", "none"),
+                quote_date=item.get("quote_date", "none"),
+            )
+        )
+    print(
+        "coverage={available}/{total}".format(
+            available=context.get("available_count", 0),
+            total=context.get("total_count", 0),
+        )
+    )
+    return 0 if context.get("is_sufficient") else 2
 
 
 if __name__ == "__main__":

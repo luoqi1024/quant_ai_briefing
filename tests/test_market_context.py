@@ -84,3 +84,26 @@ def test_build_market_context_without_provider_reports_no_coverage():
         "is_sufficient": False,
     }
 
+
+def test_build_market_context_counts_historical_snapshot_as_available():
+    watchlist = (WatchAsset("纳指科技", "QQQ", "US", "美股科技"),)
+
+    context = build_market_context(
+        "2026-05-07",
+        quote_provider=lambda *_args: {
+            "price": 100.0,
+            "change_pct": 1.2,
+            "quote_date": "2026-05-06",
+            "source": "historical_snapshot:tencent_quote",
+            "is_historical": True,
+            "stale_days": 1,
+        },
+        watchlist=watchlist,
+    )
+
+    item = context["popular_investments"][0]
+    assert context["available_count"] == 1
+    assert context["is_sufficient"] is True
+    assert item["status"] == "historical_snapshot"
+    assert item["stale_days"] == 1
+
