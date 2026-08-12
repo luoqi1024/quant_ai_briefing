@@ -309,6 +309,64 @@ def test_ai_reporter_rejects_redaction_placeholder():
         )
 
 
+def test_ai_reporter_rejects_valuation_price_labeled_as_cost():
+    settings = Settings(
+        ai_api_key="key",
+        ai_url="https://example.invalid/chat",
+        ai_model="model",
+    )
+    reporter = AIReporter(
+        settings=settings,
+        session=SuccessfulSession(
+            content="中国银行积利金\n持仓成本对应价格约 90.00 元"
+        ),
+    )
+
+    with pytest.raises(AIReportError, match="labels valuation price as average cost"):
+        reporter.generate_report(
+            {
+                "run_date": "2026-05-07",
+                "positions": [
+                    {
+                        "asset_name": "中国银行积利金",
+                        "average_cost": 100.0,
+                        "valuation_price": 90.0,
+                    }
+                ],
+            }
+        )
+
+
+def test_ai_reporter_allows_cost_and_valuation_price_on_same_line():
+    settings = Settings(
+        ai_api_key="key",
+        ai_url="https://example.invalid/chat",
+        ai_model="model",
+    )
+    reporter = AIReporter(
+        settings=settings,
+        session=SuccessfulSession(
+            content="中国银行积利金：平均成本 100.00 元，当前估值价 90.00 元"
+        ),
+    )
+
+    report = reporter.generate_report(
+        {
+            "run_date": "2026-05-07",
+            "positions": [
+                {
+                    "asset_name": "中国银行积利金",
+                    "average_cost": 100.0,
+                    "valuation_price": 90.0,
+                }
+            ],
+        }
+    )
+
+    assert "平均成本 100.00" in report
+    assert "当前估值价 90.00" in report
+
+
 def test_ai_reporter_rejects_asset_code_without_exact_name_on_same_line():
     settings = Settings(
         ai_api_key="key",
